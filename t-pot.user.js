@@ -72,7 +72,7 @@
     const DEFAULTS = {
         ticketRowSelector: 'tbody tr[data-selection-item="item"]',
         ticketIdAttr: 'data-ticket-id',
-        scrapeDelay: 2500,
+        scrapeDelay: 5000,
         soundEnabled: true,
         soundVolume: 0.3,           // 0.0 – 1.0
         autoRefreshEnabled: true,
@@ -375,13 +375,27 @@
     async function main() {
         requestNotificationPermission();
 
-        await new Promise(resolve => setTimeout(resolve, CONFIG.scrapeDelay));
+        // Wait for SIM-T to render, then retry if no tickets found
+        let allTickets = [];
+        const maxRetries = 5;
+        const retryDelay = CONFIG.scrapeDelay;
 
-        const allTickets = scrapeCurrentTickets();
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            allTickets = scrapeCurrentTickets();
+            if (allTickets.length > 0) {
+                console.log(`[T-Pot] Found ${allTickets.length} tickets on attempt ${attempt}.`);
+                break;
+            }
+            if (attempt < maxRetries) {
+                console.log(`[T-Pot] No tickets found (attempt ${attempt}/${maxRetries}), retrying in ${retryDelay/1000}s...`);
+            }
+        }
+
         const allIds = new Set(allTickets.map(t => t.id));
 
         if (allIds.size === 0) {
-            console.log('[T-Pot] No tickets found on page. Selectors may need updating.');
+            console.log('[T-Pot] No tickets found after all retries. Selectors may need updating.');
             return;
         }
 
