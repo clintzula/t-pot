@@ -33,7 +33,6 @@
  *
  *  v2.13 — 2026-09-01
  *    • Assignee change detection — notifies when a watched assignee is added to an existing ticket
- *    • Custom sound source — choose between built-in chime, or provide a URL to a custom sound file
  *    • Settings panel now opens as a centered popup instead of a side panel
  *
  *  v2.12 — 2026-09-01
@@ -84,8 +83,6 @@
         scrapeDelay: 10000,
         soundEnabled: true,
         soundVolume: 0.3,           // 0.0 – 1.0
-        soundSource: 'builtin',     // 'builtin' or URL to a .mp3/.wav file
-        customSoundURL: '',         // URL for custom notification sound
         detectAssigneeChanges: true, // notify when a watched assignee is added to existing ticket
         autoRefreshEnabled: true,
         autoRefreshMinutes: 2,
@@ -125,23 +122,10 @@
     function playNotificationSound() {
         if (!CONFIG.soundEnabled) return;
         try {
-            if (CONFIG.soundSource === 'custom' && CONFIG.customSoundURL) {
-                playCustomSound(CONFIG.customSoundURL, CONFIG.soundVolume);
-            } else {
-                playChime(CONFIG.soundVolume);
-            }
+            playChime(CONFIG.soundVolume);
         } catch (e) {
             console.warn('[T-Pot] Could not play sound:', e);
         }
-    }
-
-    function playCustomSound(url, volume) {
-        const audio = new Audio(url);
-        audio.volume = Math.max(0, Math.min(1, volume));
-        audio.play().catch(e => {
-            console.warn('[T-Pot] Custom sound failed, falling back to chime:', e);
-            playChime(volume);
-        });
     }
 
     function playChime(volume) {
@@ -200,7 +184,14 @@
         console.log('[T-Pot] Scraping with selector:', selector);
 
         // Try multiple approaches to find ticket rows
-        let rows = document.querySelectorAll(selector);
+        let rows;
+        try {
+            rows = document.querySelectorAll(selector);
+        } catch (e) {
+            console.warn('[T-Pot] Invalid selector, falling back to default:', e.message);
+            rows = document.querySelectorAll(DEFAULTS.ticketRowSelector);
+        }
+
         console.log('[T-Pot] querySelectorAll result:', rows.length, 'rows');
 
         // Fallback: if primary selector fails, try broader selectors
@@ -749,27 +740,7 @@
                             <span class="simt-volume-display" id="simt-volume-pct">${Math.round(CONFIG.soundVolume * 100)}%</span>
                         </div>
                     </div>
-                    <div class="simt-setting-row">
-                        <div class="simt-setting-label">
-                            <div class="label-main">Sound Source</div>
-                            <div class="label-desc">Built-in chime or a custom sound file URL (.mp3, .wav)</div>
-                        </div>
-                        <select id="simt-s-soundSource" style="
-                            padding: 6px 10px; background: #2a2a3e; border: 1px solid #444;
-                            border-radius: 6px; color: #e0e0e0; font-size: 13px;
-                        ">
-                            <option value="builtin" ${CONFIG.soundSource === 'builtin' ? 'selected' : ''}>🔔 Built-in Chime</option>
-                            <option value="custom" ${CONFIG.soundSource === 'custom' ? 'selected' : ''}>🔗 Custom URL</option>
-                        </select>
-                    </div>
-                    <div id="simt-custom-sound-row" style="display: ${CONFIG.soundSource === 'custom' ? 'block' : 'none'}; margin-bottom: 10px;">
-                        <div class="simt-setting-label">
-                            <div class="label-main">Custom Sound URL</div>
-                            <div class="label-desc">Direct link to an .mp3 or .wav file</div>
-                        </div>
-                        <input type="text" class="simt-input simt-input-wide" id="simt-s-customSoundURL"
-                               value="${CONFIG.customSoundURL}" placeholder="https://example.com/notification.mp3">
-                    </div>
+
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
                             <div class="label-main">Notification Duration</div>
@@ -919,13 +890,7 @@
         document.getElementById('simt-reset-btn').addEventListener('click', resetSettings);
         document.getElementById('simt-test-sound').addEventListener('click', () => {
             const vol = parseInt(document.getElementById('simt-s-volume').value) / 100;
-            const source = document.getElementById('simt-s-soundSource').value;
-            const customURL = document.getElementById('simt-s-customSoundURL').value.trim();
-            if (source === 'custom' && customURL) {
-                playCustomSound(customURL, vol);
-            } else {
-                playChime(vol);
-            }
+            playChime(vol);
 
             // Also show desktop notification + in-page popup if their toggles are on
             const testTickets = ['TEST-1234'];
@@ -939,12 +904,6 @@
                 showInPagePopup(testTickets);
                 CONFIG.inPagePopupEnabled = origPopup;
             }
-        });
-
-        // Sound source toggle — show/hide custom URL field
-        document.getElementById('simt-s-soundSource').addEventListener('change', (e) => {
-            document.getElementById('simt-custom-sound-row').style.display =
-                e.target.value === 'custom' ? 'block' : 'none';
         });
 
         // Volume slider live feedback
@@ -996,8 +955,6 @@
     async function applyAndSaveSettings() {
         CONFIG.desktopNotifEnabled = document.getElementById('simt-s-desktopNotif').checked;
         CONFIG.soundEnabled = document.getElementById('simt-s-sound').checked;
-        CONFIG.soundSource = document.getElementById('simt-s-soundSource').value;
-        CONFIG.customSoundURL = document.getElementById('simt-s-customSoundURL').value.trim();
         CONFIG.detectAssigneeChanges = document.getElementById('simt-s-detectAssignee').checked;
         CONFIG.compactBadge = document.getElementById('simt-s-compactBadge').checked;
         CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
@@ -1122,7 +1079,7 @@
         badge.style.cssText = `
             position: fixed;
             bottom: ${badgeBottom}px;
-            right: 16px;
+            right: 32px;
             z-index: 999999;
             background: #232f3e;
             color: #ff9900;
