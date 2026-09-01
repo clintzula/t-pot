@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.2
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -26,6 +26,15 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.2 — 2026-09-01
+ *    • Moved control badge left 16px
+ *    • Added in-page popup toast with clickable ticket links
+ *
+ *  v2.1 — 2026-09-01
+ *    • Auto-refresh now only runs on ticket list pages
+ *    • Pauses on create, individual ticket, and other excluded pages
+ *    • Excluded URL patterns configurable in Advanced settings
+ *
  *  v2.0 — 2026-09-01
  *    • Added volume control slider with live preview
  *    • Added filters: assignee, severity, and ticket type
@@ -77,6 +86,8 @@
         filterAssignees: '',        // comma-separated aliases, e.g. "lucclint, jsmith"
         filterSeverities: '',       // comma-separated, e.g. "SEV-2, SEV-1"
         filterTicketTypes: '',      // comma-separated, e.g. "Incident, Request"
+        // Auto-refresh page exclusions — refresh is skipped on URLs matching these patterns
+        refreshExcludePatterns: '/create, /issues/, /edit, /bulk',
     };
 
     const SETTINGS_KEY = 'simt_notifier_settings';
@@ -233,6 +244,108 @@
     }
 
     // ──────────────────────────────────────────────
+    // IN-PAGE POPUP TOAST
+    // Slides in from top-right with clickable ticket links
+    // ──────────────────────────────────────────────
+    function showInPagePopup(ticketIds) {
+        // Remove any existing popup
+        const existing = document.getElementById('tpot-popup');
+        if (existing) existing.remove();
+
+        const popup = document.createElement('div');
+        popup.id = 'tpot-popup';
+        popup.style.cssText = `
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 9999997;
+            width: 360px;
+            max-width: 90vw;
+            max-height: 400px;
+            background: #1a1a2e;
+            border: 2px solid #ff9900;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            font-family: 'Amazon Ember', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+            transform: translateX(420px);
+            transition: transform 0.35s ease;
+        `;
+
+        const count = ticketIds.length;
+
+        popup.innerHTML = `
+            <div style="
+                display: flex; align-items: center; justify-content: space-between;
+                padding: 12px 16px; background: #16213e; border-bottom: 1px solid #333;
+            ">
+                <div style="font-size: 15px; font-weight: 700; color: #ff9900;">
+                    🫖 ${count} New Ticket${count > 1 ? 's' : ''}
+                </div>
+                <button id="tpot-popup-close" style="
+                    background: none; border: none; color: #888; font-size: 20px;
+                    cursor: pointer; padding: 0 4px; line-height: 1;
+                    transition: color 0.15s;
+                ">&times;</button>
+            </div>
+            <div id="tpot-popup-list" style="
+                padding: 8px 0; max-height: 300px; overflow-y: auto;
+            ">
+                ${ticketIds.map(id => `
+                    <a href="https://t.corp.amazon.com/issues/${encodeURIComponent(id)}"
+                       target="_blank"
+                       style="
+                           display: flex; align-items: center; gap: 10px;
+                           padding: 10px 16px; color: #e0e0e0; text-decoration: none;
+                           font-size: 14px; transition: background 0.15s;
+                           border-bottom: 1px solid rgba(255,255,255,0.05);
+                       "
+                       onmouseenter="this.style.background='#2a2a3e'"
+                       onmouseleave="this.style.background='transparent'">
+                        <span style="font-size: 18px;">🎫</span>
+                        <span style="flex:1; font-weight: 600;">${id}</span>
+                        <span style="color: #ff9900; font-size: 12px;">Open →</span>
+                    </a>
+                `).join('')}
+            </div>
+            <div style="
+                padding: 8px 16px; background: #16213e;
+                border-top: 1px solid #333; text-align: center;
+            ">
+                <button id="tpot-popup-dismiss" style="
+                    background: #ff9900; color: #1a1a2e; border: none;
+                    padding: 6px 24px; border-radius: 6px; font-size: 13px;
+                    font-weight: 600; cursor: pointer; transition: background 0.15s;
+                ">Dismiss</button>
+            </div>
+        `;
+
+        document.body.appendChild(popup);
+
+        // Slide in
+        requestAnimationFrame(() => {
+            popup.style.transform = 'translateX(0)';
+        });
+
+        // Close handlers
+        const closePopup = () => {
+            popup.style.transform = 'translateX(420px)';
+            setTimeout(() => popup.remove(), 400);
+        };
+
+        document.getElementById('tpot-popup-close').addEventListener('click', closePopup);
+        document.getElementById('tpot-popup-dismiss').addEventListener('click', closePopup);
+
+        // Hover over close button changes color
+        const closeBtn = document.getElementById('tpot-popup-close');
+        closeBtn.addEventListener('mouseenter', () => closeBtn.style.color = '#fff');
+        closeBtn.addEventListener('mouseleave', () => closeBtn.style.color = '#888');
+
+        // Auto-dismiss after notification duration
+        setTimeout(closePopup, CONFIG.notifDurationSec * 1000);
+    }
+
+    // ──────────────────────────────────────────────
     // STORAGE (Tampermonkey cross-page persistence)
     // ──────────────────────────────────────────────
     const STORAGE_KEY = 'simt_known_tickets';
@@ -286,6 +399,7 @@
                 const matchingIds = matchingTickets.map(t => t.id);
                 console.log(`[T-Pot] 🆕 ${matchingIds.length} new ticket(s) matched filters:`, matchingIds);
                 showDesktopNotification(matchingIds);
+                showInPagePopup(matchingIds);
                 playNotificationSound();
             } else {
                 console.log(`[T-Pot] ${newTickets.length} new ticket(s) found but none matched filters.`);
@@ -583,6 +697,17 @@
                         </div>
                         <input type="text" class="simt-input simt-input-wide" id="simt-s-idAttr" value="${CONFIG.ticketIdAttr}">
                     </div>
+                    <div style="margin-top: 10px;">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Auto-Refresh Excluded Pages</div>
+                            <div class="label-desc">
+                                URL patterns where auto-refresh is paused (comma-separated).
+                                Matches against the page URL. E.g. ticket pages, create page.
+                            </div>
+                        </div>
+                        <input type="text" class="simt-input simt-input-wide" id="simt-s-excludePatterns"
+                               value="${CONFIG.refreshExcludePatterns}" placeholder="/create, /issues/, /edit, /bulk">
+                    </div>
                 </div>
             </div>
             <div class="simt-panel-footer">
@@ -592,7 +717,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.0 — Created by
+                🫖 T-Pot v2.2 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
@@ -646,6 +771,7 @@
         CONFIG.filterAssignees = document.getElementById('simt-s-filterAssignees').value.trim();
         CONFIG.filterSeverities = document.getElementById('simt-s-filterSeverities').value.trim();
         CONFIG.filterTicketTypes = document.getElementById('simt-s-filterTypes').value.trim();
+        CONFIG.refreshExcludePatterns = document.getElementById('simt-s-excludePatterns').value.trim() || DEFAULTS.refreshExcludePatterns;
 
         await saveSettings(CONFIG);
         closeSettingsPanel();
@@ -671,11 +797,31 @@
     let secondsRemaining = 0;
 
     // ──────────────────────────────────────────────
+    // PAGE DETECTION — only auto-refresh on list pages
+    // ──────────────────────────────────────────────
+    function isRefreshAllowedPage() {
+        const url = window.location.href.toLowerCase();
+        const patterns = parseCSVFilter(CONFIG.refreshExcludePatterns);
+
+        // If any exclusion pattern matches the current URL, block refresh
+        for (const pattern of patterns) {
+            if (url.includes(pattern)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function getPageType() {
+        return isRefreshAllowedPage() ? 'ticket-list' : 'excluded';
+    }
+
+    // ──────────────────────────────────────────────
     // DYNAMIC BADGE POSITIONING
     // ──────────────────────────────────────────────
     const BADGE_MARGIN = 16;
 
-    function findOccupiedBottomRight() {
+    function findOccupiedBottomLeft() {
         const allEls = document.querySelectorAll('body > *');
         let maxTop = 0;
         allEls.forEach(el => {
@@ -687,7 +833,7 @@
             const rect = el.getBoundingClientRect();
             const viewW = window.innerWidth;
             const viewH = window.innerHeight;
-            if (rect.right > viewW * 0.5 && rect.bottom > viewH * 0.5) {
+            if (rect.left < viewW * 0.5 && rect.bottom > viewH * 0.5) {
                 const occupiedFromBottom = viewH - rect.top;
                 if (occupiedFromBottom > maxTop) maxTop = occupiedFromBottom;
             }
@@ -696,7 +842,7 @@
     }
 
     function createControlBadge() {
-        const offsetBottom = findOccupiedBottomRight();
+        const offsetBottom = findOccupiedBottomLeft();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
 
         const badge = document.createElement('div');
@@ -704,7 +850,7 @@
         badge.style.cssText = `
             position: fixed;
             bottom: ${badgeBottom}px;
-            right: 16px;
+            left: 16px;
             z-index: 999999;
             background: #232f3e;
             color: #ff9900;
@@ -762,7 +908,7 @@
     function repositionBadge() {
         const badge = document.getElementById('simt-notifier-badge');
         if (!badge) return;
-        const offsetBottom = findOccupiedBottomRight();
+        const offsetBottom = findOccupiedBottomLeft();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
         badge.style.bottom = badgeBottom + 'px';
     }
@@ -782,11 +928,19 @@
         }
     }
 
-    function updateBadge(enabled) {
+    function updateBadge(enabled, excludedPage) {
         const label = document.getElementById('simt-badge-label');
         const icon = document.getElementById('simt-badge-icon');
-        if (label) label.textContent = enabled ? 'T-Pot: ON' : 'T-Pot: OFF';
-        if (icon) icon.textContent = enabled ? '🫖' : '⏸️';
+        if (excludedPage) {
+            if (label) label.textContent = 'T-Pot: PAUSED (non-list page)';
+            if (icon) icon.textContent = '📄';
+        } else if (enabled) {
+            if (label) label.textContent = 'T-Pot: ON';
+            if (icon) icon.textContent = '🫖';
+        } else {
+            if (label) label.textContent = 'T-Pot: OFF';
+            if (icon) icon.textContent = '⏸️';
+        }
     }
 
     function updateCountdown() {
@@ -801,16 +955,29 @@
 
     function startAutoRefresh() {
         stopAutoRefresh();
+
+        // Check if we're on an allowed page
+        if (!isRefreshAllowedPage()) {
+            console.log('[T-Pot] Auto-refresh skipped — excluded page:', window.location.pathname);
+            updateBadge(true, true); // paused due to page
+            return;
+        }
+
         const intervalMs = CONFIG.autoRefreshMinutes * 60 * 1000;
         secondsRemaining = CONFIG.autoRefreshMinutes * 60;
 
         countdownTimer = setInterval(updateCountdown, 1000);
         autoRefreshTimer = setTimeout(() => {
-            console.log('[T-Pot] Auto-refreshing page...');
-            location.reload();
+            if (isRefreshAllowedPage()) {
+                console.log('[T-Pot] Auto-refreshing page...');
+                location.reload();
+            } else {
+                console.log('[T-Pot] Refresh cancelled — navigated to excluded page.');
+                updateBadge(true, true);
+            }
         }, intervalMs);
 
-        updateBadge(true);
+        updateBadge(true, false);
         console.log(`[T-Pot] Auto-refresh scheduled in ${CONFIG.autoRefreshMinutes} min.`);
     }
 
