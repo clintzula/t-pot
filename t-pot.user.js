@@ -168,7 +168,31 @@
     }
 
     function scrapeCurrentTickets() {
-        const rows = document.querySelectorAll(CONFIG.ticketRowSelector);
+        // Debug: log what we're searching for
+        const selector = CONFIG.ticketRowSelector;
+        console.log('[T-Pot] Scraping with selector:', selector);
+
+        // Try multiple approaches to find ticket rows
+        let rows = document.querySelectorAll(selector);
+        console.log('[T-Pot] querySelectorAll result:', rows.length, 'rows');
+
+        // Fallback: if primary selector fails, try broader selectors
+        if (rows.length === 0) {
+            console.log('[T-Pot] Primary selector failed, trying fallbacks...');
+            const fallbacks = [
+                'tbody tr[aria-rowindex]',
+                'tbody tr[data-selection-item]',
+                'tr[aria-rowindex]',
+                'table tbody tr',
+                'tbody tr',
+            ];
+            for (const fb of fallbacks) {
+                rows = document.querySelectorAll(fb);
+                console.log(`[T-Pot]   Fallback "${fb}": ${rows.length} rows`);
+                if (rows.length > 0) break;
+            }
+        }
+
         const tickets = []; // {id, rowText}
         rows.forEach(row => {
             // Skip category header rows
@@ -178,6 +202,10 @@
                 tickets.push({ id, rowText: extractRowText(row) });
             }
         });
+        console.log('[T-Pot] Extracted', tickets.length, 'tickets with IDs');
+        if (tickets.length > 0) {
+            console.log('[T-Pot] Sample IDs:', tickets.slice(0, 3).map(t => t.id));
+        }
         return tickets;
     }
 
