@@ -62,6 +62,7 @@
         autoRefreshEnabled: true,
         autoRefreshMinutes: 2,
         desktopNotifEnabled: true,
+        inPagePopupEnabled: true,     // in-page popup toast
         notifDurationSec: 8,
         // Filters — blank = notify for ALL
         filterAssignees: '',        // comma-separated aliases, e.g. "lucclint, jsmith"
@@ -229,6 +230,7 @@
     // Slides in from top-right with clickable ticket links
     // ──────────────────────────────────────────────
     function showInPagePopup(ticketIds) {
+        if (!CONFIG.inPagePopupEnabled) return;
         // Remove any existing popup
         const existing = document.getElementById('tpot-popup');
         if (existing) existing.remove();
@@ -400,9 +402,10 @@
         #simt-settings-overlay {
             position: fixed; inset: 0; z-index: 9999998;
             background: rgba(0,0,0,0.45); opacity: 0;
+            pointer-events: none;
             transition: opacity 0.25s ease;
         }
-        #simt-settings-overlay.open { opacity: 1; }
+        #simt-settings-overlay.open { opacity: 1; pointer-events: auto; }
 
         #simt-settings-panel {
             position: fixed; top: 0; right: -440px; bottom: 0; z-index: 9999999;
@@ -558,10 +561,20 @@
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
                             <div class="label-main">Desktop Notifications</div>
-                            <div class="label-desc">Show browser push notifications for new tickets</div>
+                            <div class="label-desc">Browser push notifications (appear even when tab is not focused)</div>
                         </div>
                         <label class="simt-toggle">
                             <input type="checkbox" id="simt-s-desktopNotif" ${CONFIG.desktopNotifEnabled ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">In-Page Popup</div>
+                            <div class="label-desc">Slide-in popup on the page with clickable ticket links</div>
+                        </div>
+                        <label class="simt-toggle">
+                            <input type="checkbox" id="simt-s-inPagePopup" ${CONFIG.inPagePopupEnabled ? 'checked' : ''}>
                             <span class="slider"></span>
                         </label>
                     </div>
@@ -721,7 +734,13 @@
             if (document.getElementById('simt-s-desktopNotif').checked) {
                 showDesktopNotification(testTickets);
             }
-            showInPagePopup(testTickets);
+            if (document.getElementById('simt-s-inPagePopup').checked) {
+                // Temporarily enable to bypass config check during test
+                const origPopup = CONFIG.inPagePopupEnabled;
+                CONFIG.inPagePopupEnabled = true;
+                showInPagePopup(testTickets);
+                CONFIG.inPagePopupEnabled = origPopup;
+            }
         });
 
         // Volume slider live feedback
@@ -733,6 +752,12 @@
     }
 
     function openSettingsPanel() {
+        // Pause auto-refresh while settings are open
+        if (autoRefreshTimer) {
+            settingsPanelWasOpen = true;
+            stopAutoRefresh();
+        }
+
         let panel = document.getElementById('simt-settings-panel');
         if (!panel) createSettingsPanel();
         requestAnimationFrame(() => {
@@ -741,16 +766,33 @@
         });
     }
 
+    let settingsPanelWasOpen = false;
+
     function closeSettingsPanel() {
         const panel = document.getElementById('simt-settings-panel');
         const overlay = document.getElementById('simt-settings-overlay');
         if (panel) panel.classList.remove('open');
         if (overlay) overlay.classList.remove('open');
+
+        // Remove overlay from DOM after transition to prevent click-blocking
+        setTimeout(() => {
+            const o = document.getElementById('simt-settings-overlay');
+            if (o && !o.classList.contains('open')) o.remove();
+            const p = document.getElementById('simt-settings-panel');
+            if (p && !p.classList.contains('open')) p.remove();
+        }, 350);
+
+        // Resume auto-refresh if it was running before settings opened
+        if (settingsPanelWasOpen && CONFIG.autoRefreshEnabled) {
+            startAutoRefresh();
+        }
+        settingsPanelWasOpen = false;
     }
 
     async function applyAndSaveSettings() {
         CONFIG.desktopNotifEnabled = document.getElementById('simt-s-desktopNotif').checked;
         CONFIG.soundEnabled = document.getElementById('simt-s-sound').checked;
+        CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
         CONFIG.soundVolume = parseInt(document.getElementById('simt-s-volume').value) / 100;
         CONFIG.notifDurationSec = Math.max(1, Math.min(30, parseInt(document.getElementById('simt-s-notifDur').value) || 8));
         CONFIG.autoRefreshEnabled = document.getElementById('simt-s-autoRefresh').checked;
@@ -789,7 +831,20 @@
     // ──────────────────────────────────────────────
     // PAGE DETECTION — only auto-refresh on list pages
     // ──────────────────────────────────────────────
+    function isTicketListPage() {
+        const path = window.location.pathname;
+        // /issues or /issues/ or /issues?query=... are list pages
+        // /issues/TICKET-123 is an individual ticket — NOT a list page
+        // Check if path is exactly /issues or /issues/ (optionally with query params)
+        if (/^\/issues\/?$/.test(path)) return true;
+        // If there's something after /issues/ it's likely a specific ticket
+        return false;
+    }
+
     function isRefreshAllowedPage() {
+        // Must be a ticket list page first
+        if (!isTicketListPage()) return false;
+
         const url = window.location.href.toLowerCase();
         const patterns = parseCSVFilter(CONFIG.refreshExcludePatterns);
 
@@ -803,6 +858,7 @@
     }
 
     function getPageType() {
+        if (!isTicketListPage()) return 'individual-ticket';
         return isRefreshAllowedPage() ? 'ticket-list' : 'excluded';
     }
 
@@ -811,7 +867,7 @@
     // ──────────────────────────────────────────────
     const BADGE_MARGIN = 16;
 
-    function findOccupiedBottomLeft() {
+    function findOccupiedBottomRight() {
         const allEls = document.querySelectorAll('body > *');
         let maxTop = 0;
         allEls.forEach(el => {
@@ -823,7 +879,7 @@
             const rect = el.getBoundingClientRect();
             const viewW = window.innerWidth;
             const viewH = window.innerHeight;
-            if (rect.left < viewW * 0.5 && rect.bottom > viewH * 0.5) {
+            if (rect.right > viewW * 0.5 && rect.bottom > viewH * 0.5) {
                 const occupiedFromBottom = viewH - rect.top;
                 if (occupiedFromBottom > maxTop) maxTop = occupiedFromBottom;
             }
@@ -832,7 +888,7 @@
     }
 
     function createControlBadge() {
-        const offsetBottom = findOccupiedBottomLeft();
+        const offsetBottom = findOccupiedBottomRight();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
 
         const badge = document.createElement('div');
@@ -840,7 +896,7 @@
         badge.style.cssText = `
             position: fixed;
             bottom: ${badgeBottom}px;
-            left: 16px;
+            right: 16px;
             z-index: 999999;
             background: #232f3e;
             color: #ff9900;
@@ -898,7 +954,7 @@
     function repositionBadge() {
         const badge = document.getElementById('simt-notifier-badge');
         if (!badge) return;
-        const offsetBottom = findOccupiedBottomLeft();
+        const offsetBottom = findOccupiedBottomRight();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
         badge.style.bottom = badgeBottom + 'px';
     }
