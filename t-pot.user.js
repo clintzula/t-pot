@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.13
+// @version      2.14
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,10 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.14 — 2026-09-01
+ *    • Compact badge mode — toggle to hide the label text and show only the icon
+ *    • Settings panel now slides in from the left side with centered popup as fallback
+ *
  *  v2.13 — 2026-09-01
  *    • Assignee change detection — notifies when a watched assignee is added to an existing ticket
  *    • Custom sound source — choose between built-in chime, or provide a URL to a custom sound file
@@ -94,6 +98,7 @@
         filterTicketTypes: '',      // comma-separated, matches row text, e.g. "Boost, Pending"
         // Auto-refresh page exclusions — refresh is skipped on URLs matching these patterns
         refreshExcludePatterns: '/create, /edit, /bulk',
+        compactBadge: false,         // hide label text, show only icon + timer
     };
 
     const SETTINGS_KEY = 'simt_notifier_settings';
@@ -543,25 +548,21 @@
 
         #simt-settings-panel {
             position: fixed;
-            top: 50%; left: 50%;
-            transform: translate(-50%, -50%) scale(0.9);
+            top: 0; left: -480px; bottom: 0;
             z-index: 9999999;
-            width: 480px; max-width: 95vw; max-height: 90vh;
+            width: 460px; max-width: 95vw;
+            max-height: 100vh;
             background: #1a1a2e; color: #e0e0e0;
             font-family: 'Amazon Ember', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: 14px;
-            box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+            box-shadow: 4px 0 24px rgba(0,0,0,0.5);
             display: flex; flex-direction: column;
-            border-radius: 12px;
-            border: 2px solid #ff9900;
-            opacity: 0;
-            pointer-events: none;
-            transition: transform 0.3s ease, opacity 0.3s ease;
+            border-right: 3px solid #ff9900;
+            transition: left 0.3s ease;
+            overflow: hidden;
         }
         #simt-settings-panel.open {
-            transform: translate(-50%, -50%) scale(1);
-            opacity: 1;
-            pointer-events: auto;
+            left: 0;
         }
 
         .simt-panel-header {
@@ -579,7 +580,7 @@
         }
         .simt-panel-close:hover { background: #333; color: #fff; }
 
-        .simt-panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+        .simt-panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; }
 
         .simt-section { margin-bottom: 24px; }
         .simt-section-title {
@@ -843,6 +844,21 @@
                     </div>
                 </div>
 
+                <!-- APPEARANCE SECTION -->
+                <div class="simt-section">
+                    <div class="simt-section-title">Appearance</div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Compact Badge</div>
+                            <div class="label-desc">Hide the label text — only show the icon, timer, and settings gear</div>
+                        </div>
+                        <label class="simt-toggle">
+                            <input type="checkbox" id="simt-s-compactBadge" ${CONFIG.compactBadge ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
                 <!-- ADVANCED SECTION -->
                 <div class="simt-section">
                     <div class="simt-section-title">Advanced</div>
@@ -889,7 +905,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.13 — Created by
+                🫖 T-Pot v2.14 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
@@ -983,6 +999,7 @@
         CONFIG.soundSource = document.getElementById('simt-s-soundSource').value;
         CONFIG.customSoundURL = document.getElementById('simt-s-customSoundURL').value.trim();
         CONFIG.detectAssigneeChanges = document.getElementById('simt-s-detectAssignee').checked;
+        CONFIG.compactBadge = document.getElementById('simt-s-compactBadge').checked;
         CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
         CONFIG.soundVolume = parseInt(document.getElementById('simt-s-volume').value) / 100;
         CONFIG.notifDurationSec = Math.max(1, Math.min(30, parseInt(document.getElementById('simt-s-notifDur').value) || 8));
@@ -1093,6 +1110,10 @@
     }
 
     function createControlBadge() {
+        // Remove any existing badge to prevent duplicates
+        const existing = document.getElementById('simt-notifier-badge');
+        if (existing) existing.remove();
+
         const offsetBottom = findOccupiedBottomRight();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
 
@@ -1128,6 +1149,7 @@
         const label = document.createElement('span');
         label.id = 'simt-badge-label';
         label.textContent = 'T-Pot: ON';
+        if (CONFIG.compactBadge) label.style.display = 'none';
 
         const timer = document.createElement('span');
         timer.id = 'simt-badge-timer';
@@ -1182,6 +1204,7 @@
     function updateBadge(enabled, excludedPage) {
         const label = document.getElementById('simt-badge-label');
         const icon = document.getElementById('simt-badge-icon');
+        if (label) label.style.display = CONFIG.compactBadge ? 'none' : '';
         if (excludedPage) {
             if (label) label.textContent = 'T-Pot: PAUSED (non-list page)';
             if (icon) icon.textContent = '📄';
