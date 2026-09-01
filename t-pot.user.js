@@ -715,6 +715,13 @@
         document.getElementById('simt-test-sound').addEventListener('click', () => {
             const vol = parseInt(document.getElementById('simt-s-volume').value) / 100;
             playChime(vol);
+
+            // Also show desktop notification + in-page popup if their toggles are on
+            const testTickets = ['TEST-1234'];
+            if (document.getElementById('simt-s-desktopNotif').checked) {
+                showDesktopNotification(testTickets);
+            }
+            showInPagePopup(testTickets);
         });
 
         // Volume slider live feedback
