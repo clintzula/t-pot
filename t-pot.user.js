@@ -72,7 +72,7 @@
     const DEFAULTS = {
         ticketRowSelector: 'tbody tr[data-selection-item="item"]',
         ticketIdAttr: 'data-ticket-id',
-        scrapeDelay: 5000,
+        scrapeDelay: 10000,
         soundEnabled: true,
         soundVolume: 0.3,           // 0.0 – 1.0
         autoRefreshEnabled: true,
@@ -147,8 +147,9 @@
         const cells = row.querySelectorAll('td');
         for (const cell of cells) {
             const text = cell.textContent.trim();
-            // SIM-T ticket IDs: V + digits, or pure long numeric IDs
-            const match = text.match(/\b(V\d{5,}|\d{8,})\b/);
+            // SIM-T ticket IDs: V + digits (e.g. V2349367928Boost), or pure long numeric IDs
+            // No word boundary after the digits since "Boost" text may be appended directly
+            const match = text.match(/(V\d{5,}|\b\d{8,})/);
             if (match) return match[1];
         }
 
@@ -403,7 +404,7 @@
     async function main() {
         requestNotificationPermission();
 
-        // Wait for SIM-T to render, then retry if no tickets found
+        // Wait for SIM-T and other scripts (Better Search, etc.) to finish rendering
         let allTickets = [];
         const maxRetries = 5;
         const retryDelay = CONFIG.scrapeDelay;
