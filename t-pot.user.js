@@ -841,12 +841,26 @@
     // ──────────────────────────────────────────────
     function isTicketListPage() {
         const path = window.location.pathname;
-        // /issues or /issues/ or /issues?query=... are list pages
-        // /issues/TICKET-123 is an individual ticket — NOT a list page
-        // Check if path is exactly /issues or /issues/ (optionally with query params)
+        // List pages:  /issues, /issues/, /issues/all-my-groups,
+        //              /issues/assigned-to-me, /issues/search, etc.
+        // Individual tickets look like: /issues/V2349347283 or /issues/12345678
+        //   (alphanumeric ID, typically starting with a letter or pure digits)
+        //
+        // Strategy: if the segment after /issues/ looks like a ticket ID
+        // (all alphanumeric, no hyphens), it's an individual ticket page.
+        // Otherwise it's a list/filter/search view.
+
+        // Match /issues or /issues/
         if (/^\/issues\/?$/.test(path)) return true;
-        // If there's something after /issues/ it's likely a specific ticket
-        return false;
+
+        // Match /issues/<something> — check if <something> is a ticket ID
+        const match = path.match(/^\/issues\/([^/]+)/);
+        if (!match) return true; // no sub-path, it's a list page
+        const segment = match[1];
+        // Ticket IDs are purely alphanumeric (e.g. V2349347283, 12345678)
+        // List views use slugs with hyphens (e.g. all-my-groups, assigned-to-me)
+        if (/^[A-Za-z0-9]+$/.test(segment) && /\d/.test(segment)) return false;
+        return true;
     }
 
     function isRefreshAllowedPage() {
