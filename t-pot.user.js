@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.0
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
 // @author       clintzula (Luci DaProphet)
-// @match        https://t.corp.amazon.com/*
+// @match        https://t.corp.amazon.com/issues*
+// @match        https://t.corp.amazon.com/issues/*
 // @grant        GM_notification
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -26,42 +27,22 @@
  *
  *  CHANGELOG
  *  ─────────
- *  v2.2 — 2026-09-01
- *    • Moved control badge left 16px
- *    • Added in-page popup toast with clickable ticket links
- *
- *  v2.1 — 2026-09-01
- *    • Auto-refresh now only runs on ticket list pages
- *    • Pauses on create, individual ticket, and other excluded pages
- *    • Excluded URL patterns configurable in Advanced settings
- *
  *  v2.0 — 2026-09-01
- *    • Added volume control slider with live preview
- *    • Added filters: assignee, severity, and ticket type
- *    • Added author signature in header and settings panel
- *    • Added changelog
- *
- *  v1.5 — 2026-09-01
- *    • Added GitHub auto-update (@updateURL / @downloadURL)
- *    • Dynamic badge positioning to avoid other TM widgets
- *    • MutationObserver watches for late-loading widgets
- *
- *  v1.4 — 2026-09-01
- *    • Rebranded all emojis to 🫖 teapot
- *
- *  v1.3 — 2026-09-01
- *    • Renamed to T-Pot across all UI, logs, and notifications
- *
- *  v1.2 — 2026-09-01
- *    • Added settings GUI (slide-out panel with toggles & inputs)
- *    • Added Alt+S shortcut and Tampermonkey menu command
- *
- *  v1.1 — 2026-09-01
- *    • Added auto-refresh timer with countdown badge
- *    • Added Alt+R shortcut to pause/resume
- *
- *  v1.0 — 2026-09-01
- *    • Initial release: desktop notifications + sound alerts
+ *    • Desktop notifications with configurable duration
+ *    • Sound alerts with volume control slider and live preview
+ *    • In-page popup toast with clickable ticket links
+ *    • Auto-refresh timer with countdown badge and Alt+R toggle
+ *    • Auto-refresh pauses on excluded pages (create, edit, bulk)
+ *    • Script only runs on /issues pages by default
+ *    • Additional pages can be added in settings
+ *    • Filters: assignee, severity, and ticket type
+ *    • Settings GUI panel (slide-out with toggles, sliders, inputs)
+ *    • Alt+S shortcut and Tampermonkey menu command for settings
+ *    • GitHub auto-update via @updateURL / @downloadURL
+ *    • Dynamic badge positioning to avoid other widgets
+ *    • Control badge on bottom-left with status and countdown
+ *    • Rebranded to T-Pot with 🫖 teapot emoji
+ *    • Author signature in header and settings panel
  *    • Stores known tickets in Tampermonkey storage
  *    • First-run baseline (no false alarm on first load)
  ************************************************************/
@@ -87,7 +68,7 @@
         filterSeverities: '',       // comma-separated, e.g. "SEV-2, SEV-1"
         filterTicketTypes: '',      // comma-separated, e.g. "Incident, Request"
         // Auto-refresh page exclusions — refresh is skipped on URLs matching these patterns
-        refreshExcludePatterns: '/create, /issues/, /edit, /bulk',
+        refreshExcludePatterns: '/create, /edit, /bulk',
     };
 
     const SETTINGS_KEY = 'simt_notifier_settings';
@@ -699,14 +680,16 @@
                     </div>
                     <div style="margin-top: 10px;">
                         <div class="simt-setting-label">
-                            <div class="label-main">Auto-Refresh Excluded Pages</div>
+                            <div class="label-main">Auto-Refresh Excluded URL Patterns</div>
                             <div class="label-desc">
-                                URL patterns where auto-refresh is paused (comma-separated).
-                                Matches against the page URL. E.g. ticket pages, create page.
+                                Auto-refresh is paused on pages matching these patterns (comma-separated).
+                                The script only runs on /issues pages by default. To add more pages,
+                                edit the @match rules in the Tampermonkey script header.
                             </div>
                         </div>
                         <input type="text" class="simt-input simt-input-wide" id="simt-s-excludePatterns"
-                               value="${CONFIG.refreshExcludePatterns}" placeholder="/create, /issues/, /edit, /bulk">
+                               value="${CONFIG.refreshExcludePatterns}"
+                               placeholder="/create, /edit, /bulk">
                     </div>
                 </div>
             </div>
@@ -717,7 +700,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.2 — Created by
+                🫖 T-Pot v2.0 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
