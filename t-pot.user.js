@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,14 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.1 — 2026-09-01
+ *    • Fixed: clicking not working after closing settings (overlay removed from DOM)
+ *    • Timer now pauses while settings panel is open and resumes on close
+ *    • Separate toggles for desktop notifications and in-page popup
+ *    • Auto-refresh only runs on ticket list pages (not individual tickets)
+ *    • Badge moved to bottom-right with 16px offset
+ *    • Test button triggers all enabled notifications (sound, desktop, popup)
+ *
  *  v2.0 — 2026-09-01
  *    • Desktop notifications with configurable duration
  *    • Sound alerts with volume control slider and live preview
@@ -713,7 +721,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.0 — Created by
+                🫖 T-Pot v2.1 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
