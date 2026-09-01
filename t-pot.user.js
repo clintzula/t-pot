@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.12
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,14 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.12 — 2026-09-01
+ *    • Fixed CSS selectors to match SIM-T's AWS UI markup
+ *    • Ticket ID extraction now reads V-prefix IDs from cell text
+ *    • Updated filter descriptions and placeholders to match actual SIM-T values
+ *    • Severity filter now matches numbers (1, 2, 3) not SEV-1 format
+ *    • Assignee filter matches usernames as displayed on page
+ *    • Renamed Ticket Type filter to Keywords / Ticket Type
+ *
  *  v2.1 — 2026-09-01
  *    • Fixed: clicking not working after closing settings (overlay removed from DOM)
  *    • Timer now pauses while settings panel is open and resumes on close
@@ -62,7 +70,7 @@
     // DEFAULT CONFIG & SETTINGS PERSISTENCE
     // ──────────────────────────────────────────────
     const DEFAULTS = {
-        ticketRowSelector: 'tr.tt-content-tr, tr[data-ticket-id], table.list tbody tr',
+        ticketRowSelector: 'tbody tr[data-selection-item="item"]',
         ticketIdAttr: 'data-ticket-id',
         scrapeDelay: 2500,
         soundEnabled: true,
@@ -73,9 +81,9 @@
         inPagePopupEnabled: true,     // in-page popup toast
         notifDurationSec: 8,
         // Filters — blank = notify for ALL
-        filterAssignees: '',        // comma-separated aliases, e.g. "lucclint, jsmith"
-        filterSeverities: '',       // comma-separated, e.g. "SEV-2, SEV-1"
-        filterTicketTypes: '',      // comma-separated, e.g. "Incident, Request"
+        filterAssignees: '',        // comma-separated aliases as shown on page, e.g. "alexyano, mdanju"
+        filterSeverities: '',       // comma-separated severity numbers as shown, e.g. "1, 2, 3"
+        filterTicketTypes: '',      // comma-separated, matches row text, e.g. "Boost, Pending"
         // Auto-refresh page exclusions — refresh is skipped on URLs matching these patterns
         refreshExcludePatterns: '/create, /edit, /bulk',
     };
@@ -131,21 +139,26 @@
     // TICKET DATA EXTRACTION
     // ──────────────────────────────────────────────
     function extractTicketId(row) {
+        // 1. Try data attribute (if configured)
         const attrId = row.getAttribute(CONFIG.ticketIdAttr);
         if (attrId) return attrId.trim();
 
+        // 2. Search all cells for a SIM-T ticket ID pattern (e.g. V2349367928)
+        const cells = row.querySelectorAll('td');
+        for (const cell of cells) {
+            const text = cell.textContent.trim();
+            // SIM-T ticket IDs: V + digits, or pure long numeric IDs
+            const match = text.match(/\b(V\d{5,}|\d{8,})\b/);
+            if (match) return match[1];
+        }
+
+        // 3. Try links containing /issues/
         const link = row.querySelector('a[href*="/issues/"]') || row.querySelector('a[href*="/t.corp"]');
         if (link) {
             const match = link.href.match(/\/issues\/([A-Za-z0-9-]+)/);
             if (match) return match[1];
-            return link.href;
         }
 
-        const firstCell = row.querySelector('td');
-        if (firstCell) {
-            const text = firstCell.textContent.trim();
-            if (text.length > 0 && text.length < 100) return text;
-        }
         return null;
     }
 
@@ -158,6 +171,8 @@
         const rows = document.querySelectorAll(CONFIG.ticketRowSelector);
         const tickets = []; // {id, rowText}
         rows.forEach(row => {
+            // Skip category header rows
+            if (row.classList.contains('category-label')) return;
             const id = extractTicketId(row);
             if (id) {
                 tickets.push({ id, rowText: extractRowText(row) });
@@ -630,26 +645,26 @@
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
                             <div class="label-main">Assignee(s)</div>
-                            <div class="label-desc">Only notify for tickets assigned to these aliases (e.g. lucclint, jsmith)</div>
+                            <div class="label-desc">Only notify for tickets assigned to these usernames as shown on the page (e.g. alexyano, mdanju)</div>
                         </div>
                         <input type="text" class="simt-input simt-input-wide" id="simt-s-filterAssignees"
-                               value="${CONFIG.filterAssignees}" placeholder="Leave blank for all assignees">
+                               value="${CONFIG.filterAssignees}" placeholder="e.g. alexyano, mdanju, lucclint">
                     </div>
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
                             <div class="label-main">Severity</div>
-                            <div class="label-desc">Only notify for these severities (e.g. SEV-1, SEV-2)</div>
+                            <div class="label-desc">Only notify for these severity numbers as shown on the page (e.g. 1, 2, 3)</div>
                         </div>
                         <input type="text" class="simt-input simt-input-wide" id="simt-s-filterSeverities"
-                               value="${CONFIG.filterSeverities}" placeholder="Leave blank for all severities">
+                               value="${CONFIG.filterSeverities}" placeholder="e.g. 1, 2, 3">
                     </div>
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
-                            <div class="label-main">Ticket Type</div>
-                            <div class="label-desc">Only notify for these types (e.g. Incident, Request, Change)</div>
+                            <div class="label-main">Keywords / Ticket Type</div>
+                            <div class="label-desc">Only notify when row text contains these keywords (e.g. Boost, Vetting, Connectivity)</div>
                         </div>
                         <input type="text" class="simt-input simt-input-wide" id="simt-s-filterTypes"
-                               value="${CONFIG.filterTicketTypes}" placeholder="Leave blank for all types">
+                               value="${CONFIG.filterTicketTypes}" placeholder="e.g. Boost, Vetting, Connectivity">
                     </div>
                 </div>
 
@@ -721,7 +736,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.1 — Created by
+                🫖 T-Pot v2.12 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
