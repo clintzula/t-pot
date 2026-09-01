@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.12
+// @version      2.13
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,11 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.13 — 2026-09-01
+ *    • Assignee change detection — notifies when a watched assignee is added to an existing ticket
+ *    • Custom sound source — choose between built-in chime, or provide a URL to a custom sound file
+ *    • Settings panel now opens as a centered popup instead of a side panel
+ *
  *  v2.12 — 2026-09-01
  *    • Fixed CSS selectors to match SIM-T's AWS UI markup
  *    • Ticket ID extraction now reads V-prefix IDs from cell text
@@ -75,6 +80,9 @@
         scrapeDelay: 10000,
         soundEnabled: true,
         soundVolume: 0.3,           // 0.0 – 1.0
+        soundSource: 'builtin',     // 'builtin' or URL to a .mp3/.wav file
+        customSoundURL: '',         // URL for custom notification sound
+        detectAssigneeChanges: true, // notify when a watched assignee is added to existing ticket
         autoRefreshEnabled: true,
         autoRefreshMinutes: 2,
         desktopNotifEnabled: true,
@@ -112,10 +120,23 @@
     function playNotificationSound() {
         if (!CONFIG.soundEnabled) return;
         try {
-            playChime(CONFIG.soundVolume);
+            if (CONFIG.soundSource === 'custom' && CONFIG.customSoundURL) {
+                playCustomSound(CONFIG.customSoundURL, CONFIG.soundVolume);
+            } else {
+                playChime(CONFIG.soundVolume);
+            }
         } catch (e) {
             console.warn('[T-Pot] Could not play sound:', e);
         }
+    }
+
+    function playCustomSound(url, volume) {
+        const audio = new Audio(url);
+        audio.volume = Math.max(0, Math.min(1, volume));
+        audio.play().catch(e => {
+            console.warn('[T-Pot] Custom sound failed, falling back to chime:', e);
+            playChime(volume);
+        });
     }
 
     function playChime(volume) {
@@ -384,18 +405,29 @@
     // STORAGE (Tampermonkey cross-page persistence)
     // ──────────────────────────────────────────────
     const STORAGE_KEY = 'simt_known_tickets';
+    const STORAGE_KEY_V2 = 'simt_known_tickets_v2'; // stores {id: rowText} for change detection
 
     async function getStoredTickets() {
-        const raw = await GM_getValue(STORAGE_KEY, '[]');
+        // Try v2 format first (object map), fall back to v1 (array of IDs)
+        const rawV2 = await GM_getValue(STORAGE_KEY_V2, '{}');
         try {
-            return new Set(JSON.parse(raw));
+            const parsed = JSON.parse(rawV2);
+            if (Object.keys(parsed).length > 0) return parsed; // {id: rowText}
+        } catch {}
+        // Fall back to v1 format — convert to v2 shape
+        const rawV1 = await GM_getValue(STORAGE_KEY, '[]');
+        try {
+            const ids = JSON.parse(rawV1);
+            const map = {};
+            for (const id of ids) map[id] = '';
+            return map;
         } catch {
-            return new Set();
+            return {};
         }
     }
 
-    async function storeTickets(ticketSet) {
-        await GM_setValue(STORAGE_KEY, JSON.stringify([...ticketSet]));
+    async function storeTickets(ticketMap) {
+        await GM_setValue(STORAGE_KEY_V2, JSON.stringify(ticketMap));
     }
 
     // ──────────────────────────────────────────────
@@ -421,32 +453,68 @@
             }
         }
 
-        const allIds = new Set(allTickets.map(t => t.id));
+        // Build a map of {id: rowText} for current tickets
+        const currentMap = {};
+        for (const t of allTickets) {
+            currentMap[t.id] = t.rowText;
+        }
 
-        if (allIds.size === 0) {
+        if (Object.keys(currentMap).length === 0) {
             console.log('[T-Pot] No tickets found after all retries. Selectors may need updating.');
             return;
         }
 
-        const storedTickets = await getStoredTickets();
+        const storedMap = await getStoredTickets();
+        const storedIds = Object.keys(storedMap);
 
         // First run — just store, don't alert
-        if (storedTickets.size === 0) {
-            console.log(`[T-Pot] First run — stored ${allIds.size} tickets.`);
-            await storeTickets(allIds);
+        if (storedIds.length === 0) {
+            console.log(`[T-Pot] First run — stored ${Object.keys(currentMap).length} tickets.`);
+            await storeTickets(currentMap);
             return;
         }
 
-        // Find new tickets (in current but not in stored)
-        const newTickets = allTickets.filter(t => !storedTickets.has(t.id));
+        // 1. Find brand-new tickets (ID not in stored)
+        const newTickets = allTickets.filter(t => !(t.id in storedMap));
 
-        if (newTickets.length > 0) {
-            // Apply filters
-            const matchingTickets = newTickets.filter(ticketMatchesFilters);
+        // 2. Find assignee-changed tickets (ID exists but row text changed & matches a watched assignee)
+        const changedTickets = [];
+        if (CONFIG.detectAssigneeChanges) {
+            const watchedAssignees = parseCSVFilter(CONFIG.filterAssignees);
+            if (watchedAssignees.length > 0) {
+                for (const t of allTickets) {
+                    if (t.id in storedMap && storedMap[t.id] !== t.rowText) {
+                        // Row changed — check if a watched assignee now appears but wasn't there before
+                        const oldText = storedMap[t.id];
+                        for (const assignee of watchedAssignees) {
+                            if (t.rowText.includes(assignee) && !oldText.includes(assignee)) {
+                                changedTickets.push(t);
+                                console.log(`[T-Pot] 🔄 Assignee change detected on ${t.id}: "${assignee}" now assigned`);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-            if (matchingTickets.length > 0) {
-                const matchingIds = matchingTickets.map(t => t.id);
-                console.log(`[T-Pot] 🆕 ${matchingIds.length} new ticket(s) matched filters:`, matchingIds);
+        // Combine new + changed tickets for notification
+        const allNotifyTickets = [...newTickets, ...changedTickets];
+
+        if (allNotifyTickets.length > 0) {
+            // Apply filters to new tickets (changed tickets already matched an assignee)
+            const matchingNew = newTickets.filter(ticketMatchesFilters);
+            const allMatching = [...matchingNew, ...changedTickets];
+
+            if (allMatching.length > 0) {
+                const matchingIds = allMatching.map(t => t.id);
+                const newCount = matchingNew.length;
+                const changedCount = changedTickets.length;
+                const label = [
+                    newCount > 0 ? `${newCount} new` : '',
+                    changedCount > 0 ? `${changedCount} reassigned` : '',
+                ].filter(Boolean).join(', ');
+                console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, matchingIds);
                 showDesktopNotification(matchingIds);
                 showInPagePopup(matchingIds);
                 playNotificationSound();
@@ -458,7 +526,7 @@
         }
 
         // Update stored tickets to current state
-        await storeTickets(allIds);
+        await storeTickets(currentMap);
     }
 
     // ──────────────────────────────────────────────
@@ -474,16 +542,27 @@
         #simt-settings-overlay.open { opacity: 1; pointer-events: auto; }
 
         #simt-settings-panel {
-            position: fixed; top: 0; right: -440px; bottom: 0; z-index: 9999999;
-            width: 420px; max-width: 95vw;
+            position: fixed;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(0.9);
+            z-index: 9999999;
+            width: 480px; max-width: 95vw; max-height: 90vh;
             background: #1a1a2e; color: #e0e0e0;
             font-family: 'Amazon Ember', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 14px; box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+            font-size: 14px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.6);
             display: flex; flex-direction: column;
-            transition: right 0.3s ease;
-            border-left: 3px solid #ff9900;
+            border-radius: 12px;
+            border: 2px solid #ff9900;
+            opacity: 0;
+            pointer-events: none;
+            transition: transform 0.3s ease, opacity 0.3s ease;
         }
-        #simt-settings-panel.open { right: 0; }
+        #simt-settings-panel.open {
+            transform: translate(-50%, -50%) scale(1);
+            opacity: 1;
+            pointer-events: auto;
+        }
 
         .simt-panel-header {
             display: flex; align-items: center; justify-content: space-between;
@@ -671,6 +750,27 @@
                     </div>
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
+                            <div class="label-main">Sound Source</div>
+                            <div class="label-desc">Built-in chime or a custom sound file URL (.mp3, .wav)</div>
+                        </div>
+                        <select id="simt-s-soundSource" style="
+                            padding: 6px 10px; background: #2a2a3e; border: 1px solid #444;
+                            border-radius: 6px; color: #e0e0e0; font-size: 13px;
+                        ">
+                            <option value="builtin" ${CONFIG.soundSource === 'builtin' ? 'selected' : ''}>🔔 Built-in Chime</option>
+                            <option value="custom" ${CONFIG.soundSource === 'custom' ? 'selected' : ''}>🔗 Custom URL</option>
+                        </select>
+                    </div>
+                    <div id="simt-custom-sound-row" style="display: ${CONFIG.soundSource === 'custom' ? 'block' : 'none'}; margin-bottom: 10px;">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Custom Sound URL</div>
+                            <div class="label-desc">Direct link to an .mp3 or .wav file</div>
+                        </div>
+                        <input type="text" class="simt-input simt-input-wide" id="simt-s-customSoundURL"
+                               value="${CONFIG.customSoundURL}" placeholder="https://example.com/notification.mp3">
+                    </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
                             <div class="label-main">Notification Duration</div>
                             <div class="label-desc">Seconds before auto-close (1–30)</div>
                         </div>
@@ -685,6 +785,16 @@
                         Only notify when new tickets match <strong>all</strong> non-empty filters below.
                         Leave a field blank to skip that filter. Separate multiple values with commas.
                     </p>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Detect Assignee Changes</div>
+                            <div class="label-desc">Notify when a watched assignee is added to an existing ticket</div>
+                        </div>
+                        <label class="simt-toggle">
+                            <input type="checkbox" id="simt-s-detectAssignee" ${CONFIG.detectAssigneeChanges ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
                             <div class="label-main">Assignee(s)</div>
@@ -779,7 +889,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.12 — Created by
+                🫖 T-Pot v2.13 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
@@ -793,7 +903,13 @@
         document.getElementById('simt-reset-btn').addEventListener('click', resetSettings);
         document.getElementById('simt-test-sound').addEventListener('click', () => {
             const vol = parseInt(document.getElementById('simt-s-volume').value) / 100;
-            playChime(vol);
+            const source = document.getElementById('simt-s-soundSource').value;
+            const customURL = document.getElementById('simt-s-customSoundURL').value.trim();
+            if (source === 'custom' && customURL) {
+                playCustomSound(customURL, vol);
+            } else {
+                playChime(vol);
+            }
 
             // Also show desktop notification + in-page popup if their toggles are on
             const testTickets = ['TEST-1234'];
@@ -807,6 +923,12 @@
                 showInPagePopup(testTickets);
                 CONFIG.inPagePopupEnabled = origPopup;
             }
+        });
+
+        // Sound source toggle — show/hide custom URL field
+        document.getElementById('simt-s-soundSource').addEventListener('change', (e) => {
+            document.getElementById('simt-custom-sound-row').style.display =
+                e.target.value === 'custom' ? 'block' : 'none';
         });
 
         // Volume slider live feedback
@@ -858,6 +980,9 @@
     async function applyAndSaveSettings() {
         CONFIG.desktopNotifEnabled = document.getElementById('simt-s-desktopNotif').checked;
         CONFIG.soundEnabled = document.getElementById('simt-s-sound').checked;
+        CONFIG.soundSource = document.getElementById('simt-s-soundSource').value;
+        CONFIG.customSoundURL = document.getElementById('simt-s-customSoundURL').value.trim();
+        CONFIG.detectAssigneeChanges = document.getElementById('simt-s-detectAssignee').checked;
         CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
         CONFIG.soundVolume = parseInt(document.getElementById('simt-s-volume').value) / 100;
         CONFIG.notifDurationSec = Math.max(1, Math.min(30, parseInt(document.getElementById('simt-s-notifDur').value) || 8));
