@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.17
+// @version      2.19
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,15 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.19 — 2026-09-01
+ *    • Assignee toggle now strictly disables all other filters (severity, keywords, type)
+ *    • When ON, only the assignee filter is active for both new tickets and reassignments
+ *
+ *  v2.18 — 2026-09-01
+ *    • Detect Assignee Changes toggle now acts as assignee-only mode
+ *    • When ON: only notifies for tickets matching the assignee filter (new + reassigned)
+ *    • When OFF: normal mode — notifies for all new tickets using all filters
+ *
  *  v2.17 — 2026-09-01
  *    • 5 notification sounds to choose from: Tea Kettle, Classic Chime, Desk Bell, Digital Ping, Urgent Alarm
  *    • Default sound set to Tea Kettle at 60% volume
@@ -717,17 +726,34 @@
             }
         }
 
-        // Combine new + changed tickets for notification
-        const allNotifyTickets = [...newTickets, ...changedTickets];
+        // Combine tickets for notification based on mode
+        let matchingNew = [];
+        if (CONFIG.detectAssigneeChanges) {
+            // ASSIGNEE-ONLY MODE: only the assignee filter matters
+            // Severity, keywords, ticket type filters are all ignored
+            const watchedAssignees = parseCSVFilter(CONFIG.filterAssignees);
+            if (watchedAssignees.length > 0) {
+                // New tickets — only if they contain a watched assignee
+                matchingNew = newTickets.filter(t => {
+                    return watchedAssignees.some(a => t.rowText.includes(a));
+                }).map(t => {
+                    const matched = watchedAssignees.find(a => t.rowText.includes(a));
+                    return { ...t, reason: 'new', matchedAssignee: matched };
+                });
+                console.log(`[T-Pot] Assignee-only mode: ${matchingNew.length} of ${newTickets.length} new tickets match assignee filter.`);
+            } else {
+                console.log('[T-Pot] Assignee-only mode ON but no assignees configured — no notifications.');
+            }
+        } else {
+            // NORMAL MODE: apply all filters (assignee + severity + keywords)
+            matchingNew = newTickets.filter(ticketMatchesFilters).map(t => ({
+                ...t, reason: 'new'
+            }));
+        }
 
-        if (allNotifyTickets.length > 0) {
-            // Apply filters to new tickets (changed tickets already matched an assignee)
-            const matchingNew = newTickets.filter(ticketMatchesFilters).map(t => ({
-                    ...t, reason: 'new'
-                }));
-            const allMatching = [...matchingNew, ...changedTickets];
+        const allMatching = [...matchingNew, ...changedTickets];
 
-            if (allMatching.length > 0) {
+        if (allMatching.length > 0) {
                 const newCount = matchingNew.length;
                 const changedCount = changedTickets.length;
                 const label = [
@@ -738,11 +764,12 @@
                 showDesktopNotification(allMatching);
                 showInPagePopup(allMatching);
                 playNotificationSound();
-            } else {
-                console.log(`[T-Pot] ${newTickets.length} new ticket(s) found but none matched filters.`);
-            }
         } else {
-            console.log('[T-Pot] No new tickets since last visit.');
+            if (newTickets.length > 0 || changedTickets.length > 0) {
+                console.log(`[T-Pot] ${newTickets.length} new + ${changedTickets.length} changed ticket(s) found but none matched filters.`);
+            } else {
+                console.log('[T-Pot] No new tickets since last visit.');
+            }
         }
 
         // Update stored tickets to current state
@@ -999,8 +1026,8 @@
                     </p>
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
-                            <div class="label-main">Detect Assignee Changes</div>
-                            <div class="label-desc">Notify when a watched assignee is added to an existing ticket</div>
+                            <div class="label-main">Detect Assignee(s) ONLY</div>
+                            <div class="label-desc">When ON, ONLY the assignee filter is used — severity, keywords, and type filters are ignored. Notifies for new tickets and reassignments matching your assignees.</div>
                         </div>
                         <label class="simt-toggle">
                             <input type="checkbox" id="simt-s-detectAssignee" ${CONFIG.detectAssigneeChanges ? 'checked' : ''}>
@@ -1116,7 +1143,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.17 — Created by
+                🫖 T-Pot v2.19 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
