@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.15
+// @version      2.17
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,14 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.17 — 2026-09-01
+ *    • 5 notification sounds to choose from: Tea Kettle, Classic Chime, Desk Bell, Digital Ping, Urgent Alarm
+ *    • Default sound set to Tea Kettle at 60% volume
+ *    • Sound selector dropdown in settings
+ *
+ *  v2.16 — 2026-09-01
+ *    • Notification sound changed to tea kettle whistle 🫖
+ *
  *  v2.15 — 2026-09-01
  *    • Rich notifications — new tickets show 🆕 NEW TICKET, reassignments show 🔄 REASSIGNED → alias
  *    • Desktop notification title shows breakdown (e.g. "2 New + 1 Reassigned")
@@ -95,7 +103,8 @@
         ticketIdAttr: 'data-ticket-id',
         scrapeDelay: 10000,
         soundEnabled: true,
-        soundVolume: 0.3,           // 0.0 – 1.0
+        soundVolume: 0.6,           // 0.0 – 1.0
+        notifSound: 'kettle',       // 'kettle', 'chime', 'bell', 'ping', 'alarm'
         detectAssigneeChanges: true, // notify when a watched assignee is added to existing ticket
         autoRefreshEnabled: true,
         autoRefreshMinutes: 2,
@@ -135,14 +144,26 @@
     function playNotificationSound() {
         if (!CONFIG.soundEnabled) return;
         try {
-            playChime(CONFIG.soundVolume);
+            playSound(CONFIG.notifSound, CONFIG.soundVolume);
         } catch (e) {
             console.warn('[T-Pot] Could not play sound:', e);
         }
     }
 
-    function playChime(volume) {
+    function playSound(type, volume) {
         const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
+        switch (type) {
+            case 'chime':    playChimeClassic(vol); break;
+            case 'bell':     playBell(vol); break;
+            case 'ping':     playPing(vol); break;
+            case 'alarm':    playAlarm(vol); break;
+            case 'kettle':
+            default:         playChime(vol); break;
+        }
+    }
+
+    // 🔔 Classic two-tone chime
+    function playChimeClassic(vol) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         [520, 660].forEach((freq, i) => {
             const osc = ctx.createOscillator();
@@ -156,6 +177,159 @@
             osc.start(ctx.currentTime + i * 0.15);
             osc.stop(ctx.currentTime + i * 0.15 + 0.4);
         });
+    }
+
+    // 🛎️ Desk bell — single resonant ding
+    function playBell(vol) {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const t = ctx.currentTime;
+        [880, 1760, 2640].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            const amplitude = vol * (i === 0 ? 0.5 : i === 1 ? 0.2 : 0.08);
+            gain.gain.setValueAtTime(amplitude, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(t);
+            osc.stop(t + 1.3);
+        });
+    }
+
+    // 📱 Short digital ping
+    function playPing(vol) {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const t = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1200, t);
+        osc.frequency.exponentialRampToValueAtTime(800, t + 0.15);
+        gain.gain.setValueAtTime(vol * 0.5, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.35);
+        // Second ping
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1400, t + 0.2);
+        osc2.frequency.exponentialRampToValueAtTime(1000, t + 0.35);
+        gain2.gain.setValueAtTime(vol * 0.4, t + 0.2);
+        gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(t + 0.2);
+        osc2.stop(t + 0.55);
+    }
+
+    // 🚨 Urgent alarm — triple pulse
+    function playAlarm(vol) {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const t = ctx.currentTime;
+        [0, 0.25, 0.5].forEach((offset) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(700, t + offset);
+            osc.frequency.linearRampToValueAtTime(900, t + offset + 0.1);
+            gain.gain.setValueAtTime(vol * 0.25, t + offset);
+            gain.gain.linearRampToValueAtTime(0, t + offset + 0.18);
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 2000;
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(t + offset);
+            osc.stop(t + offset + 0.2);
+        });
+    }
+
+    // 🫖 Tea kettle whistle (default)
+    function playChime(volume) {
+        const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const t = ctx.currentTime;
+
+        // Real tea kettle whistle — high-pitched, wavering, steam-driven
+        // A real kettle has: high fundamental (~2-3kHz), flutter/vibrato
+        // from steam turbulence, noise component, and a wobbly buildup
+
+        // Main whistle tone — high pitched like a real kettle
+        const whistle = ctx.createOscillator();
+        whistle.type = 'sine';
+        whistle.frequency.setValueAtTime(2200, t);
+        whistle.frequency.linearRampToValueAtTime(2800, t + 0.4);
+        whistle.frequency.setValueAtTime(2800, t + 0.4);
+        whistle.frequency.linearRampToValueAtTime(2650, t + 1.0);
+        whistle.frequency.linearRampToValueAtTime(2750, t + 1.5);
+
+        // Vibrato / flutter — simulates steam pulsing through the whistle
+        const vibrato = ctx.createOscillator();
+        vibrato.type = 'sine';
+        vibrato.frequency.setValueAtTime(4, t);          // slow wobble at start
+        vibrato.frequency.linearRampToValueAtTime(8, t + 0.5);  // speeds up
+        vibrato.frequency.setValueAtTime(8, t + 0.5);
+        vibrato.frequency.linearRampToValueAtTime(6, t + 1.5);  // settles
+        const vibratoGain = ctx.createGain();
+        vibratoGain.gain.setValueAtTime(20, t);           // subtle pitch wobble
+        vibratoGain.gain.linearRampToValueAtTime(40, t + 0.5);  // more intense
+        vibratoGain.gain.setValueAtTime(40, t + 1.0);
+        vibrato.connect(vibratoGain);
+        vibratoGain.connect(whistle.frequency);           // modulate pitch
+
+        // Steam hiss — white noise through a high bandpass for that airy quality
+        const bufferSize = ctx.sampleRate * 2;
+        const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = ctx.createBufferSource();
+        noise.buffer = noiseBuffer;
+        const noiseFilter = ctx.createBiquadFilter();
+        noiseFilter.type = 'bandpass';
+        noiseFilter.frequency.value = 3500;
+        noiseFilter.Q.value = 2;
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0, t);
+        noiseGain.gain.linearRampToValueAtTime(vol * 0.08, t + 0.3);
+        noiseGain.gain.setValueAtTime(vol * 0.08, t + 1.2);
+        noiseGain.gain.linearRampToValueAtTime(0, t + 1.6);
+
+        // Narrow bandpass on the whistle for that piercing, resonant quality
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(2800, t);
+        filter.Q.value = 12;    // tight resonance = piercing whistle
+
+        // Volume envelope — builds up like steam pressure, sustains, fades
+        const mainGain = ctx.createGain();
+        mainGain.gain.setValueAtTime(0, t);
+        mainGain.gain.linearRampToValueAtTime(vol * 0.35, t + 0.3);
+        mainGain.gain.setValueAtTime(vol * 0.35, t + 0.4);
+        mainGain.gain.linearRampToValueAtTime(vol * 0.45, t + 0.8);
+        mainGain.gain.setValueAtTime(vol * 0.45, t + 1.2);
+        mainGain.gain.linearRampToValueAtTime(0, t + 1.6);
+
+        // Wire it up
+        whistle.connect(filter);
+        filter.connect(mainGain);
+        mainGain.connect(ctx.destination);
+
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(ctx.destination);
+
+        whistle.start(t);
+        vibrato.start(t);
+        noise.start(t);
+        whistle.stop(t + 1.7);
+        vibrato.stop(t + 1.7);
+        noise.stop(t + 1.7);
     }
 
     // ──────────────────────────────────────────────
@@ -780,6 +954,22 @@
                     </div>
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
+                            <div class="label-main">Notification Sound</div>
+                            <div class="label-desc">Choose your alert sound</div>
+                        </div>
+                        <select id="simt-s-notifSound" style="
+                            padding: 6px 10px; background: #2a2a3e; border: 1px solid #444;
+                            border-radius: 6px; color: #e0e0e0; font-size: 13px;
+                        ">
+                            <option value="kettle" ${CONFIG.notifSound === 'kettle' ? 'selected' : ''}>🫖 Tea Kettle</option>
+                            <option value="chime" ${CONFIG.notifSound === 'chime' ? 'selected' : ''}>🔔 Classic Chime</option>
+                            <option value="bell" ${CONFIG.notifSound === 'bell' ? 'selected' : ''}>🛎️ Desk Bell</option>
+                            <option value="ping" ${CONFIG.notifSound === 'ping' ? 'selected' : ''}>📱 Digital Ping</option>
+                            <option value="alarm" ${CONFIG.notifSound === 'alarm' ? 'selected' : ''}>🚨 Urgent Alarm</option>
+                        </select>
+                    </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
                             <div class="label-main">Volume</div>
                             <div class="label-desc">Notification sound volume</div>
                         </div>
@@ -926,7 +1116,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.15 — Created by
+                🫖 T-Pot v2.17 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
@@ -940,7 +1130,8 @@
         document.getElementById('simt-reset-btn').addEventListener('click', resetSettings);
         document.getElementById('simt-test-sound').addEventListener('click', () => {
             const vol = parseInt(document.getElementById('simt-s-volume').value) / 100;
-            playChime(vol);
+            const selectedSound = document.getElementById('simt-s-notifSound').value;
+            playSound(selectedSound, vol);
 
             // Also show desktop notification + in-page popup if their toggles are on
             const testTickets = [{id: 'TEST-1234', reason: 'new', rowText: 'test'}];
@@ -1007,6 +1198,7 @@
     async function applyAndSaveSettings() {
         CONFIG.desktopNotifEnabled = document.getElementById('simt-s-desktopNotif').checked;
         CONFIG.soundEnabled = document.getElementById('simt-s-sound').checked;
+        CONFIG.notifSound = document.getElementById('simt-s-notifSound').value;
         CONFIG.detectAssigneeChanges = document.getElementById('simt-s-detectAssignee').checked;
         CONFIG.compactBadge = document.getElementById('simt-s-compactBadge').checked;
         CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
