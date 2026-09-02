@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.19
+// @version      2.29
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,11 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.29 — 2026-09-02
+ *    • URL-keyed storage — each SIM-T view/filter has its own independent ticket baseline
+ *    • Switching between views or clicking different filter links no longer triggers false notifications
+ *    • Auto-prunes old views (keeps last 20) to prevent storage bloat
+ *
  *  v2.19 — 2026-09-01
  *    • Assignee toggle now strictly disables all other filters (severity, keywords, type)
  *    • When ON, only the assignee filter is active for both new tickets and reassignments
@@ -620,32 +625,57 @@
     }
 
     // ──────────────────────────────────────────────
-    // STORAGE (Tampermonkey cross-page persistence)
+    // STORAGE (URL-keyed — each view has its own baseline)
     // ──────────────────────────────────────────────
-    const STORAGE_KEY = 'simt_known_tickets';
-    const STORAGE_KEY_V2 = 'simt_known_tickets_v2'; // stores {id: rowText} for change detection
+    const STORAGE_KEY_V3 = 'simt_tickets_by_view'; // {viewKey: {id: rowText, ...}, ...}
 
-    async function getStoredTickets() {
-        // Try v2 format first (object map), fall back to v1 (array of IDs)
-        const rawV2 = await GM_getValue(STORAGE_KEY_V2, '{}');
+    function getViewKey() {
+        // Normalize the URL to create a stable key per view
+        // Use pathname + query string (the filter), ignore hash and transient params
+        const url = new URL(window.location.href);
+        const path = url.pathname;
+        const query = url.searchParams.get('q') || '';
+        // Create a short hash of the query to keep the key manageable
+        let hash = 0;
+        const fullKey = path + '?' + query;
+        for (let i = 0; i < fullKey.length; i++) {
+            hash = ((hash << 5) - hash + fullKey.charCodeAt(i)) | 0;
+        }
+        const key = path + '_' + Math.abs(hash).toString(36);
+        console.log('[T-Pot] View key:', key);
+        return key;
+    }
+
+    async function getAllViewData() {
+        const raw = await GM_getValue(STORAGE_KEY_V3, '{}');
         try {
-            const parsed = JSON.parse(rawV2);
-            if (Object.keys(parsed).length > 0) return parsed; // {id: rowText}
-        } catch {}
-        // Fall back to v1 format — convert to v2 shape
-        const rawV1 = await GM_getValue(STORAGE_KEY, '[]');
-        try {
-            const ids = JSON.parse(rawV1);
-            const map = {};
-            for (const id of ids) map[id] = '';
-            return map;
+            return JSON.parse(raw);
         } catch {
             return {};
         }
     }
 
+    async function getStoredTickets() {
+        const allViews = await getAllViewData();
+        const key = getViewKey();
+        return allViews[key] || {};
+    }
+
     async function storeTickets(ticketMap) {
-        await GM_setValue(STORAGE_KEY_V2, JSON.stringify(ticketMap));
+        const allViews = await getAllViewData();
+        const key = getViewKey();
+        allViews[key] = ticketMap;
+
+        // Prune old views to prevent storage bloat (keep last 20 views)
+        const keys = Object.keys(allViews);
+        if (keys.length > 20) {
+            // Remove oldest entries (first ones added)
+            const toRemove = keys.slice(0, keys.length - 20);
+            for (const k of toRemove) delete allViews[k];
+            console.log(`[T-Pot] Pruned ${toRemove.length} old view(s) from storage.`);
+        }
+
+        await GM_setValue(STORAGE_KEY_V3, JSON.stringify(allViews));
     }
 
     // ──────────────────────────────────────────────
@@ -1143,7 +1173,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.19 — Created by
+                🫖 T-Pot v2.29 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
