@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.29
+// @version      2.32
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -14,108 +14,48 @@
 // @run-at       document-idle
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
-
 /************************************************************
  *  🫖 T-Pot — SIM-T Ticket Notifier
  *  Created by: clintzula (Luci DaProphet)
  *  GitHub:     https://github.com/clintzula/t-pot
  *
- *  A Tampermonkey userscript that watches your SIM-T queue
- *  for new tickets and alerts you with desktop notifications
- *  and sound. Supports auto-refresh, volume control, and
- *  filtering by assignee, severity, and ticket type.
- *
  *  CHANGELOG
  *  ─────────
+ *  v2.32 — 2026-09-02
+ *    • Default scrape delay reduced to 5000ms (from 10000ms)
+ *    • Versioning convention: bump +0.01 per batch of ~3 changes
+ *
+ *  v2.31 — 2026-09-02
+ *    • Notifications now show a short summarized ticket title next to the ID
+ *    • "Johnny 5" titles are relabelled "J5" and take priority (path shown)
+ *    • ALL-CAPS component/failure tokens are surfaced (e.g. VETTING_CBP_POWERSHELF)
+ *    • Boilerplate ("Please repair", "problem with", QCI serials) stripped
+ *    • Titles truncated on a word boundary; new "Show Ticket Titles" toggle and
+ *      "Title Max Length" setting (default 60)
+ *
+ *  v2.30 — 2026-09-02
+ *    • Ticket ID extraction now reads the /issues/ link href FIRST (most reliable),
+ *      then the data attribute, then falls back to the loose cell-text regex
+ *    • main() scrapes immediately on the first attempt; the scrape delay now only
+ *      applies between retries (no more mandatory 10s wait on every load)
+ *    • Severity filter matches whole numbers only (bare "1" no longer matches any
+ *      digit-1 embedded in IDs, dates, or counts)
+ *    • Stripped all blank lines
+ *
  *  v2.29 — 2026-09-02
- *    • URL-keyed storage — each SIM-T view/filter has its own independent ticket baseline
- *    • Switching between views or clicking different filter links no longer triggers false notifications
+ *    • URL-keyed storage — each SIM-T view/filter has its own independent baseline
  *    • Auto-prunes old views (keeps last 20) to prevent storage bloat
- *
- *  v2.19 — 2026-09-01
- *    • Assignee toggle now strictly disables all other filters (severity, keywords, type)
- *    • When ON, only the assignee filter is active for both new tickets and reassignments
- *
- *  v2.18 — 2026-09-01
- *    • Detect Assignee Changes toggle now acts as assignee-only mode
- *    • When ON: only notifies for tickets matching the assignee filter (new + reassigned)
- *    • When OFF: normal mode — notifies for all new tickets using all filters
- *
- *  v2.17 — 2026-09-01
- *    • 5 notification sounds to choose from: Tea Kettle, Classic Chime, Desk Bell, Digital Ping, Urgent Alarm
- *    • Default sound set to Tea Kettle at 60% volume
- *    • Sound selector dropdown in settings
- *
- *  v2.16 — 2026-09-01
- *    • Notification sound changed to tea kettle whistle 🫖
- *
- *  v2.15 — 2026-09-01
- *    • Rich notifications — new tickets show 🆕 NEW TICKET, reassignments show 🔄 REASSIGNED → alias
- *    • Desktop notification title shows breakdown (e.g. "2 New + 1 Reassigned")
- *    • In-page popup shows colored badges per ticket (green = new, blue = reassigned)
- *    • Fixed ticket ID regex to capture P-prefix and other ID formats (not just V-prefix)
- *    • Fixed selector fallback for corrupted saved settings
- *    • Fixed v1→v2 storage migration skipping empty baseline
- *    • Added assignee change debug logging
- *    • Increased default scrape delay to 10s with 5-retry logic
- *    • Test button now previews both new + reassigned notification types
- *    • Badge deduplication — removes existing badge before creating new one
- *    • Settings panel scrollable on small screens
- *
- *  v2.14 — 2026-09-01
- *    • Compact badge mode — toggle to hide the label text and show only the icon
- *    • Settings panel now slides in from the left side with centered popup as fallback
- *
- *  v2.13 — 2026-09-01
- *    • Assignee change detection — notifies when a watched assignee is added to an existing ticket
- *    • Settings panel now opens as a centered popup instead of a side panel
- *
- *  v2.12 — 2026-09-01
- *    • Fixed CSS selectors to match SIM-T's AWS UI markup
- *    • Ticket ID extraction now reads V-prefix IDs from cell text
- *    • Updated filter descriptions and placeholders to match actual SIM-T values
- *    • Severity filter now matches numbers (1, 2, 3) not SEV-1 format
- *    • Assignee filter matches usernames as displayed on page
- *    • Renamed Ticket Type filter to Keywords / Ticket Type
- *
- *  v2.1 — 2026-09-01
- *    • Fixed: clicking not working after closing settings (overlay removed from DOM)
- *    • Timer now pauses while settings panel is open and resumes on close
- *    • Separate toggles for desktop notifications and in-page popup
- *    • Auto-refresh only runs on ticket list pages (not individual tickets)
- *    • Badge moved to bottom-right with 16px offset
- *    • Test button triggers all enabled notifications (sound, desktop, popup)
- *
- *  v2.0 — 2026-09-01
- *    • Desktop notifications with configurable duration
- *    • Sound alerts with volume control slider and live preview
- *    • In-page popup toast with clickable ticket links
- *    • Auto-refresh timer with countdown badge and Alt+R toggle
- *    • Auto-refresh pauses on excluded pages (create, edit, bulk)
- *    • Script only runs on /issues pages by default
- *    • Additional pages can be added in settings
- *    • Filters: assignee, severity, and ticket type
- *    • Settings GUI panel (slide-out with toggles, sliders, inputs)
- *    • Alt+S shortcut and Tampermonkey menu command for settings
- *    • GitHub auto-update via @updateURL / @downloadURL
- *    • Dynamic badge positioning to avoid other widgets
- *    • Control badge on bottom-left with status and countdown
- *    • Rebranded to T-Pot with 🫖 teapot emoji
- *    • Author signature in header and settings panel
- *    • Stores known tickets in Tampermonkey storage
- *    • First-run baseline (no false alarm on first load)
+ *  (older changelog entries trimmed — see git history)
  ************************************************************/
-
 (function () {
     'use strict';
-
     // ──────────────────────────────────────────────
     // DEFAULT CONFIG & SETTINGS PERSISTENCE
     // ──────────────────────────────────────────────
     const DEFAULTS = {
         ticketRowSelector: 'tbody tr[data-selection-item="item"]',
         ticketIdAttr: 'data-ticket-id',
-        scrapeDelay: 10000,
+        scrapeDelay: 5000,
         soundEnabled: true,
         soundVolume: 0.6,           // 0.0 – 1.0
         notifSound: 'kettle',       // 'kettle', 'chime', 'bell', 'ping', 'alarm'
@@ -125,6 +65,8 @@
         desktopNotifEnabled: true,
         inPagePopupEnabled: true,     // in-page popup toast
         notifDurationSec: 8,
+        showTicketTitles: true,     // show a short summarized title next to the ID
+        titleMaxLength: 60,         // max chars for the summarized title
         // Filters — blank = notify for ALL
         filterAssignees: '',        // comma-separated aliases as shown on page, e.g. "alexyano, mdanju"
         filterSeverities: '',       // comma-separated severity numbers as shown, e.g. "1, 2, 3"
@@ -133,9 +75,7 @@
         refreshExcludePatterns: '/create, /edit, /bulk',
         compactBadge: false,         // hide label text, show only icon + timer
     };
-
     const SETTINGS_KEY = 'simt_notifier_settings';
-
     async function loadSettings() {
         const raw = await GM_getValue(SETTINGS_KEY, '{}');
         try {
@@ -144,14 +84,11 @@
             return { ...DEFAULTS };
         }
     }
-
     async function saveSettings(settings) {
         await GM_setValue(SETTINGS_KEY, JSON.stringify(settings));
     }
-
     // CONFIG is mutable — updated by the settings GUI
     let CONFIG = { ...DEFAULTS };
-
     // ──────────────────────────────────────────────
     // SOUND SETUP — short beep via Web Audio API
     // ──────────────────────────────────────────────
@@ -163,7 +100,6 @@
             console.warn('[T-Pot] Could not play sound:', e);
         }
     }
-
     function playSound(type, volume) {
         const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
         switch (type) {
@@ -175,7 +111,6 @@
             default:         playChime(vol); break;
         }
     }
-
     // 🔔 Classic two-tone chime
     function playChimeClassic(vol) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -192,7 +127,6 @@
             osc.stop(ctx.currentTime + i * 0.15 + 0.4);
         });
     }
-
     // 🛎️ Desk bell — single resonant ding
     function playBell(vol) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -211,7 +145,6 @@
             osc.stop(t + 1.3);
         });
     }
-
     // 📱 Short digital ping
     function playPing(vol) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -240,7 +173,6 @@
         osc2.start(t + 0.2);
         osc2.stop(t + 0.55);
     }
-
     // 🚨 Urgent alarm — triple pulse
     function playAlarm(vol) {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -263,17 +195,11 @@
             osc.stop(t + offset + 0.2);
         });
     }
-
     // 🫖 Tea kettle whistle (default)
     function playChime(volume) {
         const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const t = ctx.currentTime;
-
-        // Real tea kettle whistle — high-pitched, wavering, steam-driven
-        // A real kettle has: high fundamental (~2-3kHz), flutter/vibrato
-        // from steam turbulence, noise component, and a wobbly buildup
-
         // Main whistle tone — high pitched like a real kettle
         const whistle = ctx.createOscillator();
         whistle.type = 'sine';
@@ -282,21 +208,19 @@
         whistle.frequency.setValueAtTime(2800, t + 0.4);
         whistle.frequency.linearRampToValueAtTime(2650, t + 1.0);
         whistle.frequency.linearRampToValueAtTime(2750, t + 1.5);
-
         // Vibrato / flutter — simulates steam pulsing through the whistle
         const vibrato = ctx.createOscillator();
         vibrato.type = 'sine';
-        vibrato.frequency.setValueAtTime(4, t);          // slow wobble at start
-        vibrato.frequency.linearRampToValueAtTime(8, t + 0.5);  // speeds up
+        vibrato.frequency.setValueAtTime(4, t);
+        vibrato.frequency.linearRampToValueAtTime(8, t + 0.5);
         vibrato.frequency.setValueAtTime(8, t + 0.5);
-        vibrato.frequency.linearRampToValueAtTime(6, t + 1.5);  // settles
+        vibrato.frequency.linearRampToValueAtTime(6, t + 1.5);
         const vibratoGain = ctx.createGain();
-        vibratoGain.gain.setValueAtTime(20, t);           // subtle pitch wobble
-        vibratoGain.gain.linearRampToValueAtTime(40, t + 0.5);  // more intense
+        vibratoGain.gain.setValueAtTime(20, t);
+        vibratoGain.gain.linearRampToValueAtTime(40, t + 0.5);
         vibratoGain.gain.setValueAtTime(40, t + 1.0);
         vibrato.connect(vibratoGain);
-        vibratoGain.connect(whistle.frequency);           // modulate pitch
-
+        vibratoGain.connect(whistle.frequency);
         // Steam hiss — white noise through a high bandpass for that airy quality
         const bufferSize = ctx.sampleRate * 2;
         const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
@@ -313,13 +237,11 @@
         noiseGain.gain.linearRampToValueAtTime(vol * 0.08, t + 0.3);
         noiseGain.gain.setValueAtTime(vol * 0.08, t + 1.2);
         noiseGain.gain.linearRampToValueAtTime(0, t + 1.6);
-
         // Narrow bandpass on the whistle for that piercing, resonant quality
         const filter = ctx.createBiquadFilter();
         filter.type = 'bandpass';
         filter.frequency.setValueAtTime(2800, t);
-        filter.Q.value = 12;    // tight resonance = piercing whistle
-
+        filter.Q.value = 12;
         // Volume envelope — builds up like steam pressure, sustains, fades
         const mainGain = ctx.createGain();
         mainGain.gain.setValueAtTime(0, t);
@@ -328,16 +250,13 @@
         mainGain.gain.linearRampToValueAtTime(vol * 0.45, t + 0.8);
         mainGain.gain.setValueAtTime(vol * 0.45, t + 1.2);
         mainGain.gain.linearRampToValueAtTime(0, t + 1.6);
-
         // Wire it up
         whistle.connect(filter);
         filter.connect(mainGain);
         mainGain.connect(ctx.destination);
-
         noise.connect(noiseFilter);
         noiseFilter.connect(noiseGain);
         noiseGain.connect(ctx.destination);
-
         whistle.start(t);
         vibrato.start(t);
         noise.start(t);
@@ -345,46 +264,154 @@
         vibrato.stop(t + 1.7);
         noise.stop(t + 1.7);
     }
-
     // ──────────────────────────────────────────────
     // TICKET DATA EXTRACTION
     // ──────────────────────────────────────────────
     function extractTicketId(row) {
-        // 1. Try data attribute (if configured)
-        const attrId = row.getAttribute(CONFIG.ticketIdAttr);
-        if (attrId) return attrId.trim();
-
-        // 2. Search all cells for a SIM-T ticket ID pattern (e.g. V2349367928)
-        const cells = row.querySelectorAll('td');
-        for (const cell of cells) {
-            const text = cell.textContent.trim();
-            // SIM-T ticket IDs: V/P/other letter prefix + digits, or pure long numeric IDs
-            // No word boundary after the digits since "Boost" text may be appended directly
-            const match = text.match(/([A-Z]\d{7,}|\b\d{8,})/i);
-            if (match) return match[1];
-        }
-
-        // 3. Try links containing /issues/
+        // 1. Prefer the /issues/ link href — most reliable source of the real ID
         const link = row.querySelector('a[href*="/issues/"]') || row.querySelector('a[href*="/t.corp"]');
         if (link) {
             const match = link.href.match(/\/issues\/([A-Za-z0-9-]+)/);
             if (match) return match[1];
         }
-
+        // 2. Try data attribute (if configured)
+        const attrId = row.getAttribute(CONFIG.ticketIdAttr);
+        if (attrId) return attrId.trim();
+        // 3. Fallback: search all cells for a SIM-T ticket ID pattern (e.g. V2349367928)
+        //    Loose match — only used when neither a link nor a data attribute is present.
+        const cells = row.querySelectorAll('td');
+        for (const cell of cells) {
+            const text = cell.textContent.trim();
+            const match = text.match(/([A-Z]\d{7,}|\b\d{8,})/i);
+            if (match) return match[1];
+        }
         return null;
     }
-
     function extractRowText(row) {
         // Returns the full text content of the row for filter matching
         return (row.textContent || '').toLowerCase();
     }
-
+    function extractTitle(row) {
+        // Grab the raw title text from the Title column.
+        // SIM-T renders the title as a link in its own cell. We look for a link
+        // whose href points at the ticket (/issues/<id>) but that ISN'T the Short ID
+        // link, by preferring the longest such link text in the row.
+        const links = Array.from(row.querySelectorAll('a[href*="/issues/"]'));
+        let best = '';
+        for (const a of links) {
+            const txt = (a.textContent || '').trim();
+            if (txt.length > best.length) best = txt;
+        }
+        if (best) return best;
+        // Fallback: longest <td> text that isn't just the ID/severity/date.
+        const cells = Array.from(row.querySelectorAll('td'));
+        for (const cell of cells) {
+            const txt = (cell.textContent || '').trim();
+            if (txt.length > best.length) best = txt;
+        }
+        return best;
+    }
+    function summarizeTitle(rawTitle, maxLen) {
+        // Turns a long, tag-heavy SIM-T title into a short, meaningful name.
+        // Priority:
+        //   1. "Johnny 5" (relabelled "J5") + the link path that follows it.
+        //   2. ALL-CAPS component/failure tokens (e.g. VETTING_CBP_POWERSHELF).
+        //   3. Bracketed tags / leftover text as a fallback.
+        // Result is trimmed to maxLen on a token boundary.
+        if (!rawTitle) return '';
+        const cap = maxLen || 60;
+        let title = rawTitle.replace(/\s+/g, ' ').trim();
+        // Shorten arrow notation to save space.
+        title = title.replace(/<\s*-\s*>/g, '↔');
+        // 1. Johnny 5 → J5 + everything after it (that's the meaningful link path).
+        const j5 = title.match(/johnny\s*5\s*\]?\s*(.*)$/i);
+        if (j5) {
+            let rest = (j5[1] || '').trim();
+            // Trim any trailing lone bracket left over from the tag.
+            rest = rest.replace(/^\]+\s*/, '').trim();
+            let name = ('J5 ' + rest).trim();
+            // If there's room, append the first ALL-CAPS component token for context.
+            const capsToken = findCapsTokens(title)[0];
+            if (capsToken && !name.toUpperCase().includes(capsToken) && name.length + capsToken.length + 3 <= cap) {
+                name += ' · ' + capsToken;
+            }
+            return truncateOnBoundary(name, cap);
+        }
+        // 2. ALL-CAPS tokens — the component/failure signatures.
+        const caps = findCapsTokens(title);
+        if (caps.length > 0) {
+            return truncateOnBoundary(caps.join(' · '), cap);
+        }
+        // 3. Fallback: strip boilerplate, then pick descriptive bracketed tags.
+        let cleaned = title
+            .replace(/please repair/ig, '')
+            .replace(/problem with.*$/ig, '')
+            .replace(/\bQCI\.[A-Z0-9]+\b/ig, '')
+            .trim();
+        const allBrackets = [...cleaned.matchAll(/\[([^\]]+)\]/g)].map(m => m[1].trim()).filter(Boolean);
+        // Prefer descriptive bracket tags (real words / spaces) over region/build-plan
+        // codes (RNO100 ..., EC2_BP_1, EC2.GB300R, ec2, Vetting).
+        const descriptive = allBrackets.filter(b => {
+            if (/^(ec2|vetting|training ticket)$/i.test(b)) return false;
+            if (/_BP_\d+/.test(b)) return false;
+            if (/^RNO\d/.test(b)) return false;
+            if (/^[A-Z0-9]+\.[A-Z0-9]+$/.test(b)) return false; // EC2.GB300R
+            if (/^[\d\s.-]+$/.test(b)) return false;             // pure number/rack tags
+            return /\s/.test(b) || /[a-z]/.test(b);
+        }).map(b => b.replace(/^repair:\s*/i, '').trim());
+        if (descriptive.length > 0) {
+            return truncateOnBoundary(descriptive.join(' · '), cap);
+        }
+        if (allBrackets.length > 0) {
+            return truncateOnBoundary(allBrackets.join(' · '), cap);
+        }
+        return truncateOnBoundary(cleaned || title, cap);
+    }
+    function findCapsTokens(text) {
+        // Strip serial-number payloads first (QCI.xxxx, DTA.LMITxxxx) so their caps
+        // portions don't get picked up as tokens.
+        const cleaned = text.replace(/\b[A-Z]{2,}\.[A-Z0-9]+\b/g, ' ');
+        const matches = cleaned.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) || [];
+        const NOISE = new Set(['QCI', 'RNO', 'DTA', 'LMIT', 'RNO100', 'EC2', 'ELB']);
+        const isNoise = (m) => {
+            if (NOISE.has(m)) return true;
+            if (/_BP_\d+$/.test(m)) return true;               // EC2_BP_1, POWERSHELF_BP_1, NETWORK_BP_1
+            if (/^[A-Z]{1,3}\d+[A-Z]?$/.test(m)) return true;  // GB300R style product codes
+            if (/\d/.test(m) && !m.includes('_')) return true; // hardware codes: EC2GB300R, PWRRP48PSC
+            if (/^[A-Z0-9]{12,}$/.test(m)) return true;        // long serial-ish blobs
+            return false;
+        };
+        const scored = [];
+        const seen = new Set();
+        for (const m of matches) {
+            const letters = (m.match(/[A-Z]/g) || []).length;
+            if (letters < 2) continue;
+            if (/^\d/.test(m)) continue;
+            if (seen.has(m)) continue;
+            seen.add(m);
+            // Prefer descriptive component signatures (underscores + many letters).
+            let score = letters;
+            if (m.includes('_')) score += 5;
+            if (isNoise(m)) score -= 20;
+            scored.push({ m, score });
+        }
+        return scored
+            .filter(x => x.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map(x => x.m);
+    }
+    function truncateOnBoundary(str, maxLen) {
+        const s = (str || '').trim();
+        if (s.length <= maxLen) return s;
+        // Cut at the last space before the limit so we don't split a word/token.
+        const slice = s.slice(0, maxLen - 1);
+        const lastSpace = slice.lastIndexOf(' ');
+        const cut = lastSpace > maxLen * 0.5 ? slice.slice(0, lastSpace) : slice;
+        return cut.trim() + '…';
+    }
     function scrapeCurrentTickets() {
-        // Debug: log what we're searching for
         const selector = CONFIG.ticketRowSelector;
         console.log('[T-Pot] Scraping with selector:', selector);
-
-        // Try multiple approaches to find ticket rows
         let rows;
         try {
             rows = document.querySelectorAll(selector);
@@ -392,9 +419,7 @@
             console.warn('[T-Pot] Invalid selector, falling back to default:', e.message);
             rows = document.querySelectorAll(DEFAULTS.ticketRowSelector);
         }
-
         console.log('[T-Pot] querySelectorAll result:', rows.length, 'rows');
-
         // Fallback: if primary selector fails, try broader selectors
         if (rows.length === 0) {
             console.log('[T-Pot] Primary selector failed, trying fallbacks...');
@@ -411,14 +436,15 @@
                 if (rows.length > 0) break;
             }
         }
-
-        const tickets = []; // {id, rowText}
+        const tickets = []; // {id, rowText, title}
         rows.forEach(row => {
             // Skip category header rows
             if (row.classList.contains('category-label')) return;
             const id = extractTicketId(row);
             if (id) {
-                tickets.push({ id, rowText: extractRowText(row) });
+                const rawTitle = extractTitle(row);
+                const title = summarizeTitle(rawTitle, CONFIG.titleMaxLength);
+                tickets.push({ id, rowText: extractRowText(row), title });
             }
         });
         console.log('[T-Pot] Extracted', tickets.length, 'tickets with IDs');
@@ -427,7 +453,6 @@
         }
         return tickets;
     }
-
     // ──────────────────────────────────────────────
     // TICKET FILTERING
     // ──────────────────────────────────────────────
@@ -435,28 +460,31 @@
         if (!str || !str.trim()) return [];
         return str.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     }
-
+    function severityMatches(text, severities) {
+        // Match a severity number only as a whole token (e.g. "sev 2", "sev-2", "2")
+        // so a bare "1" doesn't match digits inside IDs, dates, or counts.
+        return severities.some(s => {
+            const esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`(?:^|[^0-9])${esc}(?:$|[^0-9])`);
+            return re.test(text);
+        });
+    }
     function ticketMatchesFilters(ticket) {
         const assignees = parseCSVFilter(CONFIG.filterAssignees);
         const severities = parseCSVFilter(CONFIG.filterSeverities);
         const types = parseCSVFilter(CONFIG.filterTicketTypes);
-
         // If ALL filters are empty, notify for everything
         if (assignees.length === 0 && severities.length === 0 && types.length === 0) {
             return true;
         }
-
         const text = ticket.rowText;
-
         // Each non-empty filter must match (AND logic between categories)
         // Within a category it's OR logic (any match counts)
         if (assignees.length > 0 && !assignees.some(a => text.includes(a))) return false;
-        if (severities.length > 0 && !severities.some(s => text.includes(s))) return false;
+        if (severities.length > 0 && !severityMatches(text, severities)) return false;
         if (types.length > 0 && !types.some(t => text.includes(t))) return false;
-
         return true;
     }
-
     // ──────────────────────────────────────────────
     // DESKTOP NOTIFICATION
     // ──────────────────────────────────────────────
@@ -465,27 +493,25 @@
             Notification.requestPermission();
         }
     }
-
     function showDesktopNotification(tickets) {
         if (!CONFIG.desktopNotifEnabled) return;
         const count = tickets.length;
         const newCount = tickets.filter(t => t.reason === 'new').length;
         const reassignCount = tickets.filter(t => t.reason === 'assignee').length;
-
         // Build a clear title showing what happened
         const titleParts = [];
         if (newCount > 0) titleParts.push(`${newCount} New`);
         if (reassignCount > 0) titleParts.push(`${reassignCount} Reassigned`);
         const title = `🫖 ${titleParts.join(' + ')} — T-Pot`;
-
         // Build body with reason labels per ticket
+        const showTitle = CONFIG.showTicketTitles;
         const lines = tickets.slice(0, 5).map(t => {
-            if (t.reason === 'assignee') return `🔄 ${t.id} → assigned to ${t.matchedAssignee}`;
-            return `🆕 ${t.id} (new ticket)`;
+            const titleSuffix = (showTitle && t.title) ? ` — ${t.title}` : '';
+            if (t.reason === 'assignee') return `🔄 ${t.id}${titleSuffix} → ${t.matchedAssignee}`;
+            return `🆕 ${t.id}${titleSuffix}`;
         });
         if (count > 5) lines.push(`...and ${count - 5} more`);
         const body = lines.join('\n');
-
         if ('Notification' in window && Notification.permission === 'granted') {
             const notif = new Notification(title, {
                 body: body,
@@ -506,18 +532,23 @@
             });
         }
     }
-
     // ──────────────────────────────────────────────
     // IN-PAGE POPUP TOAST
     // Slides in from top-right with clickable ticket links
     // ──────────────────────────────────────────────
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
     function showInPagePopup(tickets) {
         if (!CONFIG.inPagePopupEnabled) return;
-        const ticketIds = tickets; // keep reference for backward compat
         // Remove any existing popup
         const existing = document.getElementById('tpot-popup');
         if (existing) existing.remove();
-
         const popup = document.createElement('div');
         popup.id = 'tpot-popup';
         popup.style.cssText = `
@@ -537,14 +568,12 @@
             transform: translateX(420px);
             transition: transform 0.35s ease;
         `;
-
         const count = tickets.length;
         const newCount = tickets.filter(t => t.reason === 'new').length;
         const reassignCount = tickets.filter(t => t.reason === 'assignee').length;
         const headerParts = [];
         if (newCount > 0) headerParts.push(`${newCount} New`);
         if (reassignCount > 0) headerParts.push(`${reassignCount} Reassigned`);
-
         popup.innerHTML = `
             <div style="
                 display: flex; align-items: center; justify-content: space-between;
@@ -565,8 +594,11 @@
                 ${tickets.map(t => {
                     const icon = t.reason === 'assignee' ? '🔄' : '🆕';
                     const badge = t.reason === 'assignee'
-                        ? '<span style="background:#2d4a7a; color:#7cb3ff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">REASSIGNED → ' + (t.matchedAssignee || '') + '</span>'
+                        ? '<span style="background:#2d4a7a; color:#7cb3ff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">REASSIGNED → ' + escapeHtml(t.matchedAssignee || '') + '</span>'
                         : '<span style="background:#2d6b3a; color:#7cff93; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">NEW TICKET</span>';
+                    const titleHtml = (CONFIG.showTicketTitles && t.title)
+                        ? '<div style="margin-top:3px; font-size:12px; color:#b8b8c8; font-weight:400; line-height:1.3;">' + escapeHtml(t.title) + '</div>'
+                        : '';
                     return `
                     <a href="https://t.corp.amazon.com/issues/${encodeURIComponent(t.id)}"
                        target="_blank"
@@ -579,11 +611,12 @@
                        onmouseenter="this.style.background='#2a2a3e'"
                        onmouseleave="this.style.background='transparent'">
                         <span style="font-size: 18px;">${icon}</span>
-                        <div style="flex:1;">
-                            <div style="font-weight: 600;">${t.id}</div>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-weight: 600;">${escapeHtml(t.id)}</div>
+                            ${titleHtml}
                             <div style="margin-top:3px;">${badge}</div>
                         </div>
-                        <span style="color: #ff9900; font-size: 12px;">Open →</span>
+                        <span style="color: #ff9900; font-size: 12px; white-space:nowrap;">Open →</span>
                     </a>`;
                 }).join('')}
             </div>
@@ -598,37 +631,29 @@
                 ">Dismiss</button>
             </div>
         `;
-
         document.body.appendChild(popup);
-
         // Slide in
         requestAnimationFrame(() => {
             popup.style.transform = 'translateX(0)';
         });
-
         // Close handlers
         const closePopup = () => {
             popup.style.transform = 'translateX(420px)';
             setTimeout(() => popup.remove(), 400);
         };
-
         document.getElementById('tpot-popup-close').addEventListener('click', closePopup);
         document.getElementById('tpot-popup-dismiss').addEventListener('click', closePopup);
-
         // Hover over close button changes color
         const closeBtn = document.getElementById('tpot-popup-close');
         closeBtn.addEventListener('mouseenter', () => closeBtn.style.color = '#fff');
         closeBtn.addEventListener('mouseleave', () => closeBtn.style.color = '#888');
-
         // Auto-dismiss after notification duration
         setTimeout(closePopup, CONFIG.notifDurationSec * 1000);
     }
-
     // ──────────────────────────────────────────────
     // STORAGE (URL-keyed — each view has its own baseline)
     // ──────────────────────────────────────────────
     const STORAGE_KEY_V3 = 'simt_tickets_by_view'; // {viewKey: {id: rowText, ...}, ...}
-
     function getViewKey() {
         // Normalize the URL to create a stable key per view
         // Use pathname + query string (the filter), ignore hash and transient params
@@ -645,7 +670,6 @@
         console.log('[T-Pot] View key:', key);
         return key;
     }
-
     async function getAllViewData() {
         const raw = await GM_getValue(STORAGE_KEY_V3, '{}');
         try {
@@ -654,43 +678,38 @@
             return {};
         }
     }
-
     async function getStoredTickets() {
         const allViews = await getAllViewData();
         const key = getViewKey();
         return allViews[key] || {};
     }
-
     async function storeTickets(ticketMap) {
         const allViews = await getAllViewData();
         const key = getViewKey();
         allViews[key] = ticketMap;
-
         // Prune old views to prevent storage bloat (keep last 20 views)
         const keys = Object.keys(allViews);
         if (keys.length > 20) {
-            // Remove oldest entries (first ones added)
             const toRemove = keys.slice(0, keys.length - 20);
             for (const k of toRemove) delete allViews[k];
             console.log(`[T-Pot] Pruned ${toRemove.length} old view(s) from storage.`);
         }
-
         await GM_setValue(STORAGE_KEY_V3, JSON.stringify(allViews));
     }
-
     // ──────────────────────────────────────────────
     // MAIN LOGIC
     // ──────────────────────────────────────────────
     async function main() {
         requestNotificationPermission();
-
-        // Wait for SIM-T and other scripts (Better Search, etc.) to finish rendering
+        // Wait for SIM-T and other scripts (Better Search, etc.) to finish rendering.
+        // Scrape immediately on the first attempt; only delay between retries.
         let allTickets = [];
         const maxRetries = 5;
         const retryDelay = CONFIG.scrapeDelay;
-
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            if (attempt > 1) {
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+            }
             allTickets = scrapeCurrentTickets();
             if (allTickets.length > 0) {
                 console.log(`[T-Pot] Found ${allTickets.length} tickets on attempt ${attempt}.`);
@@ -700,31 +719,25 @@
                 console.log(`[T-Pot] No tickets found (attempt ${attempt}/${maxRetries}), retrying in ${retryDelay/1000}s...`);
             }
         }
-
         // Build a map of {id: rowText} for current tickets
         const currentMap = {};
         for (const t of allTickets) {
             currentMap[t.id] = t.rowText;
         }
-
         if (Object.keys(currentMap).length === 0) {
             console.log('[T-Pot] No tickets found after all retries. Selectors may need updating.');
             return;
         }
-
         const storedMap = await getStoredTickets();
         const storedIds = Object.keys(storedMap);
-
         // First run — just store, don't alert
         if (storedIds.length === 0) {
             console.log(`[T-Pot] First run — stored ${Object.keys(currentMap).length} tickets.`);
             await storeTickets(currentMap);
             return;
         }
-
         // 1. Find brand-new tickets (ID not in stored)
         const newTickets = allTickets.filter(t => !(t.id in storedMap));
-
         // 2. Find assignee-changed tickets (ID exists but row text changed & matches a watched assignee)
         const changedTickets = [];
         if (CONFIG.detectAssigneeChanges) {
@@ -736,7 +749,6 @@
                 for (const t of allTickets) {
                     if (t.id in storedMap && storedMap[t.id] !== t.rowText) {
                         rowsChanged++;
-                        // Row changed — check if a watched assignee now appears but wasn't there before
                         const oldText = storedMap[t.id];
                         // Skip if old text is empty (v1→v2 migration, no baseline to compare)
                         if (!oldText) continue;
@@ -755,15 +767,12 @@
                 console.log('[T-Pot] No watched assignees configured — skipping assignee change detection.');
             }
         }
-
         // Combine tickets for notification based on mode
         let matchingNew = [];
         if (CONFIG.detectAssigneeChanges) {
             // ASSIGNEE-ONLY MODE: only the assignee filter matters
-            // Severity, keywords, ticket type filters are all ignored
             const watchedAssignees = parseCSVFilter(CONFIG.filterAssignees);
             if (watchedAssignees.length > 0) {
-                // New tickets — only if they contain a watched assignee
                 matchingNew = newTickets.filter(t => {
                     return watchedAssignees.some(a => t.rowText.includes(a));
                 }).map(t => {
@@ -780,20 +789,18 @@
                 ...t, reason: 'new'
             }));
         }
-
         const allMatching = [...matchingNew, ...changedTickets];
-
         if (allMatching.length > 0) {
-                const newCount = matchingNew.length;
-                const changedCount = changedTickets.length;
-                const label = [
-                    newCount > 0 ? `${newCount} new` : '',
-                    changedCount > 0 ? `${changedCount} reassigned` : '',
-                ].filter(Boolean).join(', ');
-                console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, allMatching.map(t => t.id));
-                showDesktopNotification(allMatching);
-                showInPagePopup(allMatching);
-                playNotificationSound();
+            const newCount = matchingNew.length;
+            const changedCount = changedTickets.length;
+            const label = [
+                newCount > 0 ? `${newCount} new` : '',
+                changedCount > 0 ? `${changedCount} reassigned` : '',
+            ].filter(Boolean).join(', ');
+            console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, allMatching.map(t => t.id));
+            showDesktopNotification(allMatching);
+            showInPagePopup(allMatching);
+            playNotificationSound();
         } else {
             if (newTickets.length > 0 || changedTickets.length > 0) {
                 console.log(`[T-Pot] ${newTickets.length} new + ${changedTickets.length} changed ticket(s) found but none matched filters.`);
@@ -801,11 +808,9 @@
                 console.log('[T-Pot] No new tickets since last visit.');
             }
         }
-
         // Update stored tickets to current state
         await storeTickets(currentMap);
     }
-
     // ──────────────────────────────────────────────
     // SETTINGS GUI STYLES
     // ──────────────────────────────────────────────
@@ -817,7 +822,6 @@
             transition: opacity 0.25s ease;
         }
         #simt-settings-overlay.open { opacity: 1; pointer-events: auto; }
-
         #simt-settings-panel {
             position: fixed;
             top: 0; left: -480px; bottom: 0;
@@ -836,7 +840,6 @@
         #simt-settings-panel.open {
             left: 0;
         }
-
         .simt-panel-header {
             display: flex; align-items: center; justify-content: space-between;
             padding: 18px 20px; border-bottom: 1px solid #333;
@@ -851,16 +854,13 @@
             transition: background 0.15s, color 0.15s;
         }
         .simt-panel-close:hover { background: #333; color: #fff; }
-
         .simt-panel-body { flex: 1; overflow-y: auto; padding: 16px 20px; min-height: 0; }
-
         .simt-section { margin-bottom: 24px; }
         .simt-section-title {
             font-size: 12px; font-weight: 700; text-transform: uppercase;
             letter-spacing: 1px; color: #ff9900; margin-bottom: 12px;
             padding-bottom: 6px; border-bottom: 1px solid #333;
         }
-
         .simt-setting-row {
             display: flex; align-items: center; justify-content: space-between;
             padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -871,7 +871,6 @@
         .simt-setting-label .label-desc {
             font-size: 12px; color: #888; margin-top: 2px;
         }
-
         /* Toggle switch */
         .simt-toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
         .simt-toggle input { opacity: 0; width: 0; height: 0; }
@@ -886,7 +885,6 @@
         }
         .simt-toggle input:checked + .slider { background: #ff9900; }
         .simt-toggle input:checked + .slider::before { transform: translateX(20px); }
-
         /* Number / text inputs */
         .simt-input {
             width: 70px; padding: 6px 10px; background: #2a2a3e; border: 1px solid #444;
@@ -895,7 +893,6 @@
         }
         .simt-input:focus { outline: none; border-color: #ff9900; }
         .simt-input-wide { width: 100%; text-align: left; margin-top: 6px; }
-
         /* Volume slider */
         .simt-range {
             -webkit-appearance: none; appearance: none;
@@ -917,7 +914,6 @@
         .simt-volume-display {
             font-size: 12px; color: #aaa; min-width: 32px; text-align: right;
         }
-
         /* Buttons */
         .simt-panel-footer {
             padding: 14px 20px; border-top: 1px solid #333;
@@ -936,7 +932,6 @@
         .simt-btn-danger:hover { background: #e74c3c; color: #fff; }
         .simt-btn-test { background: transparent; color: #ff9900; border: 1px solid #ff9900; padding: 4px 12px; font-size: 12px; }
         .simt-btn-test:hover { background: #ff9900; color: #1a1a2e; }
-
         .simt-signature {
             text-align: center; padding: 10px 20px 14px;
             border-top: 1px solid #333; background: #16213e;
@@ -947,24 +942,20 @@
         }
         .simt-signature a:hover { text-decoration: underline; }
     `;
-
     function injectStyles() {
         const style = document.createElement('style');
         style.textContent = PANEL_STYLES;
         document.head.appendChild(style);
     }
-
     // ──────────────────────────────────────────────
     // SETTINGS GUI PANEL
     // ──────────────────────────────────────────────
     function createSettingsPanel() {
         injectStyles();
-
         const overlay = document.createElement('div');
         overlay.id = 'simt-settings-overlay';
         overlay.addEventListener('click', closeSettingsPanel);
         document.body.appendChild(overlay);
-
         const panel = document.createElement('div');
         panel.id = 'simt-settings-panel';
         panel.innerHTML = `
@@ -1037,7 +1028,6 @@
                             <span class="simt-volume-display" id="simt-volume-pct">${Math.round(CONFIG.soundVolume * 100)}%</span>
                         </div>
                     </div>
-
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
                             <div class="label-main">Notification Duration</div>
@@ -1045,8 +1035,24 @@
                         </div>
                         <input type="number" class="simt-input" id="simt-s-notifDur" min="1" max="30" value="${CONFIG.notifDurationSec}">
                     </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Show Ticket Titles</div>
+                            <div class="label-desc">Show a short summarized title next to each ticket ID (J5 paths and ALL-CAPS components are prioritized)</div>
+                        </div>
+                        <label class="simt-toggle">
+                            <input type="checkbox" id="simt-s-showTitles" ${CONFIG.showTicketTitles ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Title Max Length</div>
+                            <div class="label-desc">Max characters for the summarized title (20–120)</div>
+                        </div>
+                        <input type="number" class="simt-input" id="simt-s-titleMaxLen" min="20" max="120" value="${CONFIG.titleMaxLength}">
+                    </div>
                 </div>
-
                 <!-- FILTERS SECTION -->
                 <div class="simt-section">
                     <div class="simt-section-title">Filters</div>
@@ -1089,7 +1095,6 @@
                                value="${CONFIG.filterTicketTypes}" placeholder="e.g. Boost, Vetting, Connectivity">
                     </div>
                 </div>
-
                 <!-- AUTO-REFRESH SECTION -->
                 <div class="simt-section">
                     <div class="simt-section-title">Auto-Refresh</div>
@@ -1111,7 +1116,6 @@
                         <input type="number" class="simt-input" id="simt-s-interval" min="1" max="60" value="${CONFIG.autoRefreshMinutes}">
                     </div>
                 </div>
-
                 <!-- APPEARANCE SECTION -->
                 <div class="simt-section">
                     <div class="simt-section-title">Appearance</div>
@@ -1126,14 +1130,13 @@
                         </label>
                     </div>
                 </div>
-
                 <!-- ADVANCED SECTION -->
                 <div class="simt-section">
                     <div class="simt-section-title">Advanced</div>
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
                             <div class="label-main">Scrape Delay (ms)</div>
-                            <div class="label-desc">Wait time for SIM-T to render before reading tickets</div>
+                            <div class="label-desc">Wait time between retries when SIM-T hasn't rendered tickets yet</div>
                         </div>
                         <input type="number" class="simt-input" id="simt-s-scrapeDelay" min="500" max="10000" step="500" value="${CONFIG.scrapeDelay}">
                     </div>
@@ -1173,13 +1176,12 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.29 — Created by
+                🫖 T-Pot v2.32 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
         `;
         document.body.appendChild(panel);
-
         // Wire up buttons
         document.getElementById('simt-close-btn').addEventListener('click', closeSettingsPanel);
         document.getElementById('simt-cancel-btn').addEventListener('click', closeSettingsPanel);
@@ -1189,9 +1191,8 @@
             const vol = parseInt(document.getElementById('simt-s-volume').value) / 100;
             const selectedSound = document.getElementById('simt-s-notifSound').value;
             playSound(selectedSound, vol);
-
             // Also show desktop notification + in-page popup if their toggles are on
-            const testTickets = [{id: 'TEST-1234', reason: 'new', rowText: 'test'}];
+            const testTickets = [{id: 'TEST-1234', reason: 'new', rowText: 'test', title: 'J5 rno100-100-es-m1-p14-t1-r16 jrp41-1 ↔ rno100…'}];
             if (document.getElementById('simt-s-desktopNotif').checked) {
                 showDesktopNotification(testTickets);
             }
@@ -1199,13 +1200,12 @@
                 const origPopup = CONFIG.inPagePopupEnabled;
                 CONFIG.inPagePopupEnabled = true;
                 showInPagePopup([
-                    {id: 'TEST-1234', reason: 'new', rowText: 'test'},
-                    {id: 'TEST-5678', reason: 'assignee', matchedAssignee: 'lucclint', rowText: 'test'}
+                    {id: 'TEST-1234', reason: 'new', rowText: 'test', title: 'J5 rno100-100-es-m1-p14-t1-r16 jrp41-1 ↔ rno100…'},
+                    {id: 'TEST-5678', reason: 'assignee', matchedAssignee: 'lucclint', rowText: 'test', title: 'VETTING_CBP_POWERSHELF · POWERSHELF_BP_1'}
                 ]);
                 CONFIG.inPagePopupEnabled = origPopup;
             }
         });
-
         // Volume slider live feedback
         const volumeSlider = document.getElementById('simt-s-volume');
         const volumePct = document.getElementById('simt-volume-pct');
@@ -1213,14 +1213,12 @@
             volumePct.textContent = volumeSlider.value + '%';
         });
     }
-
     function openSettingsPanel() {
         // Pause auto-refresh while settings are open
-        if (autoRefreshTimer) {
+        if (isAutoRefreshRunning) {
             settingsPanelWasOpen = true;
-            stopAutoRefresh();
+            pauseAutoRefresh();
         }
-
         let panel = document.getElementById('simt-settings-panel');
         if (!panel) createSettingsPanel();
         requestAnimationFrame(() => {
@@ -1228,15 +1226,12 @@
             document.getElementById('simt-settings-panel').classList.add('open');
         });
     }
-
     let settingsPanelWasOpen = false;
-
     function closeSettingsPanel() {
         const panel = document.getElementById('simt-settings-panel');
         const overlay = document.getElementById('simt-settings-overlay');
         if (panel) panel.classList.remove('open');
         if (overlay) overlay.classList.remove('open');
-
         // Remove overlay from DOM after transition to prevent click-blocking
         setTimeout(() => {
             const o = document.getElementById('simt-settings-overlay');
@@ -1244,14 +1239,16 @@
             const p = document.getElementById('simt-settings-panel');
             if (p && !p.classList.contains('open')) p.remove();
         }, 350);
-
-        // Resume auto-refresh if it was running before settings opened
+        // Resume auto-refresh from where it left off
         if (settingsPanelWasOpen && CONFIG.autoRefreshEnabled) {
-            startAutoRefresh();
+            if (secondsRemaining > 0) {
+                resumeWithSeconds(secondsRemaining);
+            } else {
+                startAutoRefresh();
+            }
         }
         settingsPanelWasOpen = false;
     }
-
     async function applyAndSaveSettings() {
         CONFIG.desktopNotifEnabled = document.getElementById('simt-s-desktopNotif').checked;
         CONFIG.soundEnabled = document.getElementById('simt-s-sound').checked;
@@ -1261,6 +1258,8 @@
         CONFIG.inPagePopupEnabled = document.getElementById('simt-s-inPagePopup').checked;
         CONFIG.soundVolume = parseInt(document.getElementById('simt-s-volume').value) / 100;
         CONFIG.notifDurationSec = Math.max(1, Math.min(30, parseInt(document.getElementById('simt-s-notifDur').value) || 8));
+        CONFIG.showTicketTitles = document.getElementById('simt-s-showTitles').checked;
+        CONFIG.titleMaxLength = Math.max(20, Math.min(120, parseInt(document.getElementById('simt-s-titleMaxLen').value) || 60));
         CONFIG.autoRefreshEnabled = document.getElementById('simt-s-autoRefresh').checked;
         CONFIG.autoRefreshMinutes = Math.max(1, Math.min(60, parseInt(document.getElementById('simt-s-interval').value) || 2));
         CONFIG.scrapeDelay = Math.max(500, Math.min(10000, parseInt(document.getElementById('simt-s-scrapeDelay').value) || 2500));
@@ -1270,14 +1269,11 @@
         CONFIG.filterSeverities = document.getElementById('simt-s-filterSeverities').value.trim();
         CONFIG.filterTicketTypes = document.getElementById('simt-s-filterTypes').value.trim();
         CONFIG.refreshExcludePatterns = document.getElementById('simt-s-excludePatterns').value.trim() || DEFAULTS.refreshExcludePatterns;
-
         await saveSettings(CONFIG);
         closeSettingsPanel();
-
         if (CONFIG.autoRefreshEnabled) { startAutoRefresh(); } else { stopAutoRefresh(); }
         console.log('[T-Pot] Settings saved.', CONFIG);
     }
-
     async function resetSettings() {
         if (!confirm('Reset all T-Pot settings to defaults?')) return;
         Object.assign(CONFIG, DEFAULTS);
@@ -1286,48 +1282,34 @@
         if (CONFIG.autoRefreshEnabled) { startAutoRefresh(); } else { stopAutoRefresh(); }
         console.log('[T-Pot] Settings reset to defaults.');
     }
-
     // ──────────────────────────────────────────────
     // AUTO-REFRESH TIMER
     // ──────────────────────────────────────────────
     let autoRefreshTimer = null;
     let countdownTimer = null;
     let secondsRemaining = 0;
-
+    let isAutoRefreshRunning = false;
     // ──────────────────────────────────────────────
     // PAGE DETECTION — only auto-refresh on list pages
     // ──────────────────────────────────────────────
     function isTicketListPage() {
         const path = window.location.pathname;
-        // List pages:  /issues, /issues/, /issues/all-my-groups,
-        //              /issues/assigned-to-me, /issues/search, etc.
-        // Individual tickets look like: /issues/V2349347283 or /issues/12345678
-        //   (alphanumeric ID, typically starting with a letter or pure digits)
-        //
-        // Strategy: if the segment after /issues/ looks like a ticket ID
-        // (all alphanumeric, no hyphens), it's an individual ticket page.
-        // Otherwise it's a list/filter/search view.
-
         // Match /issues or /issues/
         if (/^\/issues\/?$/.test(path)) return true;
-
         // Match /issues/<something> — check if <something> is a ticket ID
         const match = path.match(/^\/issues\/([^/]+)/);
         if (!match) return true; // no sub-path, it's a list page
         const segment = match[1];
-        // Ticket IDs: letter + 7+ digits (e.g. V2349347283, P500063113) or pure 8+ digits
-        // List views use slugs with hyphens (e.g. all-my-groups, assigned-to-me)
+        // Ticket IDs: letter + 7+ digits (e.g. V2349347283, P500063113) or pure 8+ digits.
+        // List views use slugs with hyphens (e.g. all-my-groups, assigned-to-me).
         if (/^[A-Za-z]\d{7,}$/.test(segment) || /^\d{8,}$/.test(segment)) return false;
         return true;
     }
-
     function isRefreshAllowedPage() {
         // Must be a ticket list page first
         if (!isTicketListPage()) return false;
-
         const url = window.location.href.toLowerCase();
         const patterns = parseCSVFilter(CONFIG.refreshExcludePatterns);
-
         // If any exclusion pattern matches the current URL, block refresh
         for (const pattern of patterns) {
             if (url.includes(pattern)) {
@@ -1336,17 +1318,14 @@
         }
         return true;
     }
-
     function getPageType() {
         if (!isTicketListPage()) return 'individual-ticket';
         return isRefreshAllowedPage() ? 'ticket-list' : 'excluded';
     }
-
     // ──────────────────────────────────────────────
     // DYNAMIC BADGE POSITIONING
     // ──────────────────────────────────────────────
     const BADGE_MARGIN = 16;
-
     function findOccupiedBottomRight() {
         const allEls = document.querySelectorAll('body > *');
         let maxTop = 0;
@@ -1366,15 +1345,12 @@
         });
         return maxTop;
     }
-
     function createControlBadge() {
         // Remove any existing badge to prevent duplicates
         const existing = document.getElementById('simt-notifier-badge');
         if (existing) existing.remove();
-
         const offsetBottom = findOccupiedBottomRight();
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
-
         const badge = document.createElement('div');
         badge.id = 'simt-notifier-badge';
         badge.style.cssText = `
@@ -1399,21 +1375,17 @@
             transition: opacity 0.2s;
         `;
         badge.title = 'Click to toggle auto-refresh (Alt+R)';
-
         const icon = document.createElement('span');
         icon.id = 'simt-badge-icon';
         icon.textContent = '🫖';
-
         const label = document.createElement('span');
         label.id = 'simt-badge-label';
         label.textContent = 'T-Pot: ON';
         if (CONFIG.compactBadge) label.style.display = 'none';
-
         const timer = document.createElement('span');
         timer.id = 'simt-badge-timer';
         timer.style.cssText = 'color: #aaa; font-weight: 400; font-size: 12px;';
         timer.textContent = '';
-
         const settingsBtn = document.createElement('span');
         settingsBtn.textContent = '⚙️';
         settingsBtn.title = 'Open Settings';
@@ -1424,18 +1396,14 @@
             e.stopPropagation();
             openSettingsPanel();
         });
-
         badge.appendChild(icon);
         badge.appendChild(label);
         badge.appendChild(timer);
         badge.appendChild(settingsBtn);
         document.body.appendChild(badge);
-
         badge.addEventListener('click', toggleAutoRefresh);
-
         return badge;
     }
-
     function repositionBadge() {
         const badge = document.getElementById('simt-notifier-badge');
         if (!badge) return;
@@ -1443,7 +1411,6 @@
         const badgeBottom = offsetBottom > 0 ? offsetBottom + BADGE_MARGIN : BADGE_MARGIN;
         badge.style.bottom = badgeBottom + 'px';
     }
-
     let repositionObserver = null;
     function startRepositionWatcher() {
         setTimeout(repositionBadge, 3000);
@@ -1458,7 +1425,6 @@
             });
         }
     }
-
     function updateBadge(enabled, excludedPage) {
         const label = document.getElementById('simt-badge-label');
         const icon = document.getElementById('simt-badge-icon');
@@ -1474,7 +1440,6 @@
             if (icon) icon.textContent = '⏸️';
         }
     }
-
     function updateCountdown() {
         const timer = document.getElementById('simt-badge-timer');
         if (timer && secondsRemaining > 0) {
@@ -1484,20 +1449,26 @@
             secondsRemaining--;
         }
     }
-
     function startAutoRefresh() {
-        stopAutoRefresh();
-
+        pauseAutoRefresh(); // clean up any existing timers
+        isAutoRefreshRunning = true;
         // Check if we're on an allowed page
         if (!isRefreshAllowedPage()) {
             console.log('[T-Pot] Auto-refresh skipped — excluded page:', window.location.pathname);
             updateBadge(true, true); // paused due to page
             return;
         }
-
-        const intervalMs = CONFIG.autoRefreshMinutes * 60 * 1000;
-        secondsRemaining = CONFIG.autoRefreshMinutes * 60;
-
+        // Use full interval for fresh start
+        resumeWithSeconds(CONFIG.autoRefreshMinutes * 60);
+    }
+    function resumeWithSeconds(seconds) {
+        // Clear any existing timers first
+        clearTimeout(autoRefreshTimer);
+        clearInterval(countdownTimer);
+        autoRefreshTimer = null;
+        countdownTimer = null;
+        secondsRemaining = seconds;
+        isAutoRefreshRunning = true;
         countdownTimer = setInterval(updateCountdown, 1000);
         autoRefreshTimer = setTimeout(() => {
             if (isRefreshAllowedPage()) {
@@ -1507,29 +1478,42 @@
                 console.log('[T-Pot] Refresh cancelled — navigated to excluded page.');
                 updateBadge(true, true);
             }
-        }, intervalMs);
-
+        }, seconds * 1000);
         updateBadge(true, false);
-        console.log(`[T-Pot] Auto-refresh scheduled in ${CONFIG.autoRefreshMinutes} min.`);
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        console.log(`[T-Pot] Auto-refresh scheduled in ${mins}:${secs.toString().padStart(2, '0')}.`);
     }
-
-    function stopAutoRefresh() {
-        if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; }
-        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    function pauseAutoRefresh() {
+        // Stop timers but KEEP secondsRemaining so we can resume
+        clearTimeout(autoRefreshTimer);
+        clearInterval(countdownTimer);
+        autoRefreshTimer = null;
+        countdownTimer = null;
+        isAutoRefreshRunning = false;
         const timer = document.getElementById('simt-badge-timer');
         if (timer) timer.textContent = '';
         updateBadge(false);
     }
-
+    function stopAutoRefresh() {
+        pauseAutoRefresh();
+        secondsRemaining = 0; // full reset
+    }
     function toggleAutoRefresh() {
-        if (autoRefreshTimer) {
-            stopAutoRefresh();
+        if (isAutoRefreshRunning) {
+            pauseAutoRefresh();
             console.log('[T-Pot] Auto-refresh paused.');
         } else {
-            startAutoRefresh();
+            if (secondsRemaining > 0) {
+                // Resume from where we left off
+                console.log(`[T-Pot] Resuming with ${secondsRemaining}s remaining.`);
+                resumeWithSeconds(secondsRemaining);
+            } else {
+                // Fresh start
+                startAutoRefresh();
+            }
         }
     }
-
     // Keyboard shortcut: Alt+R to toggle auto-refresh
     document.addEventListener('keydown', (e) => {
         if (e.altKey && e.key.toLowerCase() === 'r') {
@@ -1537,7 +1521,6 @@
             toggleAutoRefresh();
         }
     });
-
     // Keyboard shortcut: Alt+S to open settings
     document.addEventListener('keydown', (e) => {
         if (e.altKey && e.key.toLowerCase() === 's') {
@@ -1545,25 +1528,37 @@
             openSettingsPanel();
         }
     });
-
     // Register Tampermonkey menu command
     GM_registerMenuCommand('🫖 T-Pot Settings', openSettingsPanel);
-
     // ──────────────────────────────────────────────
     // INIT — load saved settings, then run
     // ──────────────────────────────────────────────
     (async function init() {
         CONFIG = await loadSettings();
-
+        // One-time migration to v2.29+ URL-keyed storage
+        // Clear old storage formats and fix corrupted settings
+        const migrationDone = await GM_getValue('tpot_v229_migrated', false);
+        if (!migrationDone) {
+            console.log('[T-Pot] Running v2.29 migration — clearing old storage...');
+            await GM_setValue('simt_known_tickets', '[]');
+            await GM_setValue('simt_known_tickets_v2', '{}');
+            await GM_setValue('simt_tickets_by_view', '{}');
+            // Fix corrupted selector if present
+            if (CONFIG.ticketRowSelector && !CONFIG.ticketRowSelector.includes('"item"')) {
+                console.log('[T-Pot] Fixing corrupted selector...');
+                CONFIG.ticketRowSelector = DEFAULTS.ticketRowSelector;
+                await saveSettings(CONFIG);
+            }
+            await GM_setValue('tpot_v229_migrated', true);
+            console.log('[T-Pot] Migration complete.');
+        }
         // Badge loads instantly — no waiting for ticket scraping
         createControlBadge();
         startRepositionWatcher();
         if (CONFIG.autoRefreshEnabled) {
             startAutoRefresh();
         }
-
         // Ticket scraping runs in the background
         main();
     })();
-
 })();
