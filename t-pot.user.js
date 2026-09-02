@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.14
+// @version      2.15
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
@@ -27,6 +27,19 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.15 — 2026-09-01
+ *    • Rich notifications — new tickets show 🆕 NEW TICKET, reassignments show 🔄 REASSIGNED → alias
+ *    • Desktop notification title shows breakdown (e.g. "2 New + 1 Reassigned")
+ *    • In-page popup shows colored badges per ticket (green = new, blue = reassigned)
+ *    • Fixed ticket ID regex to capture P-prefix and other ID formats (not just V-prefix)
+ *    • Fixed selector fallback for corrupted saved settings
+ *    • Fixed v1→v2 storage migration skipping empty baseline
+ *    • Added assignee change debug logging
+ *    • Increased default scrape delay to 10s with 5-retry logic
+ *    • Test button now previews both new + reassigned notification types
+ *    • Badge deduplication — removes existing badge before creating new one
+ *    • Settings panel scrollable on small screens
+ *
  *  v2.14 — 2026-09-01
  *    • Compact badge mode — toggle to hide the label text and show only the icon
  *    • Settings panel now slides in from the left side with centered popup as fallback
@@ -157,9 +170,9 @@
         const cells = row.querySelectorAll('td');
         for (const cell of cells) {
             const text = cell.textContent.trim();
-            // SIM-T ticket IDs: V + digits (e.g. V2349367928Boost), or pure long numeric IDs
+            // SIM-T ticket IDs: V/P/other letter prefix + digits, or pure long numeric IDs
             // No word boundary after the digits since "Boost" text may be appended directly
-            const match = text.match(/(V\d{5,}|\b\d{8,})/);
+            const match = text.match(/([A-Z]\d{7,}|\b\d{8,})/i);
             if (match) return match[1];
         }
 
@@ -265,13 +278,25 @@
         }
     }
 
-    function showDesktopNotification(newTicketIds) {
+    function showDesktopNotification(tickets) {
         if (!CONFIG.desktopNotifEnabled) return;
-        const count = newTicketIds.length;
-        const title = `🫖 ${count} New Ticket${count > 1 ? 's' : ''} — T-Pot`;
-        const body = count <= 5
-            ? newTicketIds.join('\n')
-            : newTicketIds.slice(0, 4).join('\n') + `\n...and ${count - 4} more`;
+        const count = tickets.length;
+        const newCount = tickets.filter(t => t.reason === 'new').length;
+        const reassignCount = tickets.filter(t => t.reason === 'assignee').length;
+
+        // Build a clear title showing what happened
+        const titleParts = [];
+        if (newCount > 0) titleParts.push(`${newCount} New`);
+        if (reassignCount > 0) titleParts.push(`${reassignCount} Reassigned`);
+        const title = `🫖 ${titleParts.join(' + ')} — T-Pot`;
+
+        // Build body with reason labels per ticket
+        const lines = tickets.slice(0, 5).map(t => {
+            if (t.reason === 'assignee') return `🔄 ${t.id} → assigned to ${t.matchedAssignee}`;
+            return `🆕 ${t.id} (new ticket)`;
+        });
+        if (count > 5) lines.push(`...and ${count - 5} more`);
+        const body = lines.join('\n');
 
         if ('Notification' in window && Notification.permission === 'granted') {
             const notif = new Notification(title, {
@@ -298,8 +323,9 @@
     // IN-PAGE POPUP TOAST
     // Slides in from top-right with clickable ticket links
     // ──────────────────────────────────────────────
-    function showInPagePopup(ticketIds) {
+    function showInPagePopup(tickets) {
         if (!CONFIG.inPagePopupEnabled) return;
+        const ticketIds = tickets; // keep reference for backward compat
         // Remove any existing popup
         const existing = document.getElementById('tpot-popup');
         if (existing) existing.remove();
@@ -324,7 +350,12 @@
             transition: transform 0.35s ease;
         `;
 
-        const count = ticketIds.length;
+        const count = tickets.length;
+        const newCount = tickets.filter(t => t.reason === 'new').length;
+        const reassignCount = tickets.filter(t => t.reason === 'assignee').length;
+        const headerParts = [];
+        if (newCount > 0) headerParts.push(`${newCount} New`);
+        if (reassignCount > 0) headerParts.push(`${reassignCount} Reassigned`);
 
         popup.innerHTML = `
             <div style="
@@ -332,7 +363,7 @@
                 padding: 12px 16px; background: #16213e; border-bottom: 1px solid #333;
             ">
                 <div style="font-size: 15px; font-weight: 700; color: #ff9900;">
-                    🫖 ${count} New Ticket${count > 1 ? 's' : ''}
+                    🫖 ${headerParts.join(' + ')}
                 </div>
                 <button id="tpot-popup-close" style="
                     background: none; border: none; color: #888; font-size: 20px;
@@ -343,8 +374,13 @@
             <div id="tpot-popup-list" style="
                 padding: 8px 0; max-height: 300px; overflow-y: auto;
             ">
-                ${ticketIds.map(id => `
-                    <a href="https://t.corp.amazon.com/issues/${encodeURIComponent(id)}"
+                ${tickets.map(t => {
+                    const icon = t.reason === 'assignee' ? '🔄' : '🆕';
+                    const badge = t.reason === 'assignee'
+                        ? '<span style="background:#2d4a7a; color:#7cb3ff; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">REASSIGNED → ' + (t.matchedAssignee || '') + '</span>'
+                        : '<span style="background:#2d6b3a; color:#7cff93; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">NEW TICKET</span>';
+                    return `
+                    <a href="https://t.corp.amazon.com/issues/${encodeURIComponent(t.id)}"
                        target="_blank"
                        style="
                            display: flex; align-items: center; gap: 10px;
@@ -354,11 +390,14 @@
                        "
                        onmouseenter="this.style.background='#2a2a3e'"
                        onmouseleave="this.style.background='transparent'">
-                        <span style="font-size: 18px;">🎫</span>
-                        <span style="flex:1; font-weight: 600;">${id}</span>
+                        <span style="font-size: 18px;">${icon}</span>
+                        <div style="flex:1;">
+                            <div style="font-weight: 600;">${t.id}</div>
+                            <div style="margin-top:3px;">${badge}</div>
+                        </div>
                         <span style="color: #ff9900; font-size: 12px;">Open →</span>
-                    </a>
-                `).join('')}
+                    </a>`;
+                }).join('')}
             </div>
             <div style="
                 padding: 8px 16px; background: #16213e;
@@ -477,20 +516,30 @@
         const changedTickets = [];
         if (CONFIG.detectAssigneeChanges) {
             const watchedAssignees = parseCSVFilter(CONFIG.filterAssignees);
+            console.log('[T-Pot] Assignee change detection ON. Watched assignees:', watchedAssignees);
             if (watchedAssignees.length > 0) {
+                let changesChecked = 0;
+                let rowsChanged = 0;
                 for (const t of allTickets) {
                     if (t.id in storedMap && storedMap[t.id] !== t.rowText) {
+                        rowsChanged++;
                         // Row changed — check if a watched assignee now appears but wasn't there before
                         const oldText = storedMap[t.id];
+                        // Skip if old text is empty (v1→v2 migration, no baseline to compare)
+                        if (!oldText) continue;
                         for (const assignee of watchedAssignees) {
                             if (t.rowText.includes(assignee) && !oldText.includes(assignee)) {
-                                changedTickets.push(t);
+                                changedTickets.push({ ...t, reason: 'assignee', matchedAssignee: assignee });
                                 console.log(`[T-Pot] 🔄 Assignee change detected on ${t.id}: "${assignee}" now assigned`);
                                 break;
                             }
                         }
                     }
+                    changesChecked++;
                 }
+                console.log(`[T-Pot] Checked ${changesChecked} tickets, ${rowsChanged} had row changes, ${changedTickets.length} matched assignee filter.`);
+            } else {
+                console.log('[T-Pot] No watched assignees configured — skipping assignee change detection.');
             }
         }
 
@@ -499,20 +548,21 @@
 
         if (allNotifyTickets.length > 0) {
             // Apply filters to new tickets (changed tickets already matched an assignee)
-            const matchingNew = newTickets.filter(ticketMatchesFilters);
+            const matchingNew = newTickets.filter(ticketMatchesFilters).map(t => ({
+                    ...t, reason: 'new'
+                }));
             const allMatching = [...matchingNew, ...changedTickets];
 
             if (allMatching.length > 0) {
-                const matchingIds = allMatching.map(t => t.id);
                 const newCount = matchingNew.length;
                 const changedCount = changedTickets.length;
                 const label = [
                     newCount > 0 ? `${newCount} new` : '',
                     changedCount > 0 ? `${changedCount} reassigned` : '',
                 ].filter(Boolean).join(', ');
-                console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, matchingIds);
-                showDesktopNotification(matchingIds);
-                showInPagePopup(matchingIds);
+                console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, allMatching.map(t => t.id));
+                showDesktopNotification(allMatching);
+                showInPagePopup(allMatching);
                 playNotificationSound();
             } else {
                 console.log(`[T-Pot] ${newTickets.length} new ticket(s) found but none matched filters.`);
@@ -876,7 +926,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.14 — Created by
+                🫖 T-Pot v2.15 — Created by
                 <a href="https://github.com/clintzula" target="_blank">clintzula</a>
                 (Luci DaProphet)
             </div>
@@ -893,15 +943,17 @@
             playChime(vol);
 
             // Also show desktop notification + in-page popup if their toggles are on
-            const testTickets = ['TEST-1234'];
+            const testTickets = [{id: 'TEST-1234', reason: 'new', rowText: 'test'}];
             if (document.getElementById('simt-s-desktopNotif').checked) {
                 showDesktopNotification(testTickets);
             }
             if (document.getElementById('simt-s-inPagePopup').checked) {
-                // Temporarily enable to bypass config check during test
                 const origPopup = CONFIG.inPagePopupEnabled;
                 CONFIG.inPagePopupEnabled = true;
-                showInPagePopup(testTickets);
+                showInPagePopup([
+                    {id: 'TEST-1234', reason: 'new', rowText: 'test'},
+                    {id: 'TEST-5678', reason: 'assignee', matchedAssignee: 'lucclint', rowText: 'test'}
+                ]);
                 CONFIG.inPagePopupEnabled = origPopup;
             }
         });
@@ -1014,9 +1066,9 @@
         const match = path.match(/^\/issues\/([^/]+)/);
         if (!match) return true; // no sub-path, it's a list page
         const segment = match[1];
-        // Ticket IDs are purely alphanumeric (e.g. V2349347283, 12345678)
+        // Ticket IDs: letter + 7+ digits (e.g. V2349347283, P500063113) or pure 8+ digits
         // List views use slugs with hyphens (e.g. all-my-groups, assigned-to-me)
-        if (/^[A-Za-z0-9]+$/.test(segment) && /\d/.test(segment)) return false;
+        if (/^[A-Za-z]\d{7,}$/.test(segment) || /^\d{8,}$/.test(segment)) return false;
         return true;
     }
 
