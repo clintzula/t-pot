@@ -1524,15 +1524,16 @@
     // ──────────────────────────────────────────────
     (async function init() {
         CONFIG = await loadSettings();
-        main();
 
-        setTimeout(() => {
-            createControlBadge();
-            startRepositionWatcher();
-            if (CONFIG.autoRefreshEnabled) {
-                startAutoRefresh();
-            }
-        }, CONFIG.scrapeDelay + 500);
+        // Badge loads instantly — no waiting for ticket scraping
+        createControlBadge();
+        startRepositionWatcher();
+        if (CONFIG.autoRefreshEnabled) {
+            startAutoRefresh();
+        }
+
+        // Ticket scraping runs in the background
+        main();
     })();
 
 })();
