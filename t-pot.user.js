@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.37
+// @version      2.38
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
 // @author       Clinton Lucien (lucclint)
-// @match        https://t.corp.amazon.com/issues*
-// @match        https://t.corp.amazon.com/issues/*
+// @match        https://t.corp.amazon.com/*
 // @grant        GM_notification
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -21,6 +20,17 @@
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.38 — 2026-09-07
+ *    • Fixed T-Pot not loading when a tab started on a non-list route (e.g. a
+ *      ticket opened in a new tab) and you navigated to the list — @match now
+ *      covers the whole t.corp.amazon.com host so Tampermonkey always injects
+ *    • SPA navigation handling: badge/timer/scrape re-initialize on in-app route
+ *      changes; UI is torn down when navigating away from /issues
+ *    • isTicketListPage() no longer treats arbitrary non-/issues paths as list
+ *      pages (prevents the badge/auto-refresh showing on unrelated pages)
+ *    • In-app refresh now waits for the table to actually re-render before
+ *      scraping, so notifications fire in in-app mode
+ *
  *  v2.37 — 2026-09-07
  *    • Added a Sev 2.5 (Daytime Sev-2) severity checkbox; checked by default
  *    • Default severities are now 1, 2, 2.5, 3
@@ -45,37 +55,6 @@
  *    • Prevent double-notify: main() now has a re-entrancy guard so overlapping
  *      runs (possible in in-app mode) can't alert the same tickets twice
  *
- *  v2.33 — 2026-09-07
- *    • New "Refresh Mode" setting: full page reload (default) or in-app refresh
- *      — in-app clicks SIM-T's own Refresh button (data-testid="sim-search-refresh"),
- *        keeping scroll/filters and re-scraping without a full page restart
- *      — falls back to a full reload if the button can't be found
- *    • Assignee-only mode ("Detect Assignee(s) ONLY") now defaults to OFF
- *
- *  v2.32 — 2026-09-02
- *    • Default scrape delay reduced to 5000ms (from 10000ms)
- *    • Versioning convention: bump +0.01 per batch of ~3 changes
- *
- *  v2.31 — 2026-09-02
- *    • Notifications now show a short summarized ticket title next to the ID
- *    • "Johnny 5" titles are relabelled "J5" and take priority (path shown)
- *    • ALL-CAPS component/failure tokens are surfaced (e.g. VETTING_CBP_POWERSHELF)
- *    • Boilerplate ("Please repair", "problem with", QCI serials) stripped
- *    • Titles truncated on a word boundary; new "Show Ticket Titles" toggle and
- *      "Title Max Length" setting (default 60)
- *
- *  v2.30 — 2026-09-02
- *    • Ticket ID extraction now reads the /issues/ link href FIRST (most reliable),
- *      then the data attribute, then falls back to the loose cell-text regex
- *    • main() scrapes immediately on the first attempt; the scrape delay now only
- *      applies between retries (no more mandatory 10s wait on every load)
- *    • Severity filter matches whole numbers only (bare "1" no longer matches any
- *      digit-1 embedded in IDs, dates, or counts)
- *    • Stripped all blank lines
- *
- *  v2.29 — 2026-09-02
- *    • URL-keyed storage — each SIM-T view/filter has its own independent baseline
- *    • Auto-prunes old views (keeps last 20) to prevent storage bloat
  *  (older changelog entries trimmed — see git history)
  ************************************************************/
 (function () {
@@ -756,6 +735,82 @@
         await GM_setValue(STORAGE_KEY_V3, JSON.stringify(allViews));
     }
     // ──────────────────────────────────────────────
+    // CROSS-TAB NOTIFICATION DEDUPE
+    // Goal: if multiple tabs are open on the SAME view/filter, only ONE tab
+    // fires the notification for a given set of new tickets. Tabs on DIFFERENT
+    // filters (different view key) notify independently.
+    //
+    // Primary: BroadcastChannel for instant, race-free tab-to-tab claims.
+    // Fallback/persistence: a shared GM storage claim with a short TTL so that
+    // near-simultaneous refreshes still deduplicate and closed tabs can't
+    // permanently suppress alerts.
+    // ──────────────────────────────────────────────
+    const CLAIM_TTL_MS = 10000;                 // a claim is honored for 10s
+    const CLAIM_KEY_PREFIX = 'tpot_notify_claim_';
+    // Unique id for THIS tab, so we can tell our own claims from others'.
+    const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    // Track claims heard from other tabs via BroadcastChannel: {viewKey: {ts, ids:Set}}
+    const heardClaims = {};
+    let notifyChannel = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+        try {
+            notifyChannel = new BroadcastChannel('tpot_notify');
+            notifyChannel.onmessage = (ev) => {
+                const msg = ev.data;
+                if (!msg || msg.type !== 'claim' || msg.tabId === TAB_ID) return;
+                const prev = heardClaims[msg.viewKey];
+                const ids = new Set(msg.ids || []);
+                if (prev) msg.ids.forEach(id => prev.ids.add(id));
+                heardClaims[msg.viewKey] = { ts: msg.ts, ids: prev ? prev.ids : ids };
+            };
+        } catch (e) {
+            console.warn('[T-Pot] BroadcastChannel unavailable:', e);
+        }
+    }
+    function recentlyClaimedByOtherTab(viewKey, ids) {
+        // Was any of these ticket ids claimed for this exact view key by another
+        // tab within the TTL window? Checks in-memory heard claims first, then the
+        // shared storage claim as a fallback.
+        const now = Date.now();
+        const heard = heardClaims[viewKey];
+        if (heard && (now - heard.ts) < CLAIM_TTL_MS && ids.some(id => heard.ids.has(id))) {
+            return true;
+        }
+        return false;
+    }
+    async function claimNotification(viewKey, ids) {
+        // Returns true if THIS tab wins the claim (should notify), false if another
+        // tab already claimed these tickets for this view.
+        const now = Date.now();
+        // 1. In-memory check from BroadcastChannel (instant, race-free within a turn).
+        if (recentlyClaimedByOtherTab(viewKey, ids)) {
+            console.log('[T-Pot] Notification claimed by another tab (same filter) — skipping.');
+            return false;
+        }
+        // 2. Shared-storage tie-breaker for near-simultaneous refreshes.
+        const storageKey = CLAIM_KEY_PREFIX + viewKey;
+        let existing = {};
+        try { existing = JSON.parse(await GM_getValue(storageKey, '{}')) || {}; } catch { existing = {}; }
+        if (existing.ts && (now - existing.ts) < CLAIM_TTL_MS && existing.tabId !== TAB_ID) {
+            const claimedIds = new Set(existing.ids || []);
+            if (ids.some(id => claimedIds.has(id))) {
+                console.log('[T-Pot] Notification recently claimed in shared storage (same filter) — skipping.');
+                return false;
+            }
+        }
+        // 3. We win — record our claim locally, in storage, and broadcast it.
+        const record = { tabId: TAB_ID, ts: now, ids };
+        heardClaims[viewKey] = {
+            ts: now,
+            ids: new Set([...(heardClaims[viewKey]?.ids || []), ...ids]),
+        };
+        try { await GM_setValue(storageKey, JSON.stringify(record)); } catch (e) {}
+        if (notifyChannel) {
+            try { notifyChannel.postMessage({ type: 'claim', tabId: TAB_ID, viewKey, ids, ts: now }); } catch (e) {}
+        }
+        return true;
+    }
+    // ──────────────────────────────────────────────
     // MAIN LOGIC
     // ──────────────────────────────────────────────
     // Guard against overlapping main() runs. In in-app refresh mode the page no
@@ -873,9 +928,16 @@
                 changedCount > 0 ? `${changedCount} reassigned` : '',
             ].filter(Boolean).join(', ');
             console.log(`[T-Pot] 🆕 ${label} ticket(s) matched filters:`, allMatching.map(t => t.id));
-            showDesktopNotification(allMatching);
-            showInPagePopup(allMatching);
-            playNotificationSound();
+            // Cross-tab dedupe: only notify if another tab on the SAME view/filter
+            // hasn't already claimed these tickets. Different filters => different
+            // view key => independent notifications.
+            const claimIds = allMatching.map(t => t.id);
+            const won = await claimNotification(getViewKey(), claimIds);
+            if (won) {
+                showDesktopNotification(allMatching);
+                showInPagePopup(allMatching);
+                playNotificationSound();
+            }
         } else {
             if (newTickets.length > 0 || changedTickets.length > 0) {
                 console.log(`[T-Pot] ${newTickets.length} new + ${changedTickets.length} changed ticket(s) found but none matched filters.`);
@@ -1272,7 +1334,7 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.37 — Created by
+                🫖 T-Pot v2.38 — Created by
                 <a href="https://github.com/clintzula" target="_blank">Clinton Lucien</a>
                 (lucclint)
             </div>
@@ -1392,13 +1454,21 @@
     // ──────────────────────────────────────────────
     // PAGE DETECTION — only auto-refresh on list pages
     // ──────────────────────────────────────────────
+    function isIssuesPage() {
+        // True for any /issues route (list OR individual ticket). Used to decide
+        // whether T-Pot should show its UI at all, now that @match covers the
+        // whole host so we can catch SPA routes that start elsewhere.
+        return /^\/issues(\/|$)/.test(window.location.pathname);
+    }
     function isTicketListPage() {
         const path = window.location.pathname;
+        // Only /issues routes can be list pages.
+        if (!/^\/issues(\/|$)/.test(path)) return false;
         // Match /issues or /issues/
         if (/^\/issues\/?$/.test(path)) return true;
         // Match /issues/<something> — check if <something> is a ticket ID
         const match = path.match(/^\/issues\/([^/]+)/);
-        if (!match) return true; // no sub-path, it's a list page
+        if (!match) return true; // /issues with trailing content but no segment
         const segment = match[1];
         // Ticket IDs: letter + 7+ digits (e.g. V2349347283, P500063113) or pure 8+ digits.
         // List views use slugs with hyphens (e.g. all-my-groups, assigned-to-me).
@@ -1568,24 +1638,64 @@
             || document.querySelector('button[title="Refresh"]')
             || document.querySelector('button[aria-label*="refresh" i], button[title*="refresh" i]');
     }
-    function doRefresh() {
+    function getRowSignature() {
+        // A cheap fingerprint of the currently-rendered ticket rows so we can tell
+        // when the in-app refresh has actually swapped in new content.
+        let rows;
+        try {
+            rows = document.querySelectorAll(CONFIG.ticketRowSelector);
+        } catch (e) {
+            rows = document.querySelectorAll(DEFAULTS.ticketRowSelector);
+        }
+        if (!rows || rows.length === 0) {
+            rows = document.querySelectorAll('tbody tr');
+        }
+        return rows.length + '|' + (rows[0] ? (rows[0].textContent || '').slice(0, 120) : '');
+    }
+    function waitForTableUpdate(prevSig, timeoutMs) {
+        // Resolve when the row signature changes, or after timeoutMs as a fallback.
+        return new Promise(resolve => {
+            const start = Date.now();
+            const check = () => getRowSignature() !== prevSig;
+            if (check()) return resolve(true);
+            let obs = null;
+            const done = (changed) => {
+                if (obs) { try { obs.disconnect(); } catch (e) {} obs = null; }
+                clearInterval(poll);
+                resolve(changed);
+            };
+            // Poll as the reliable path (MutationObserver alone can miss reflows).
+            const poll = setInterval(() => {
+                if (check()) return done(true);
+                if (Date.now() - start >= timeoutMs) return done(false);
+            }, 250);
+            if (typeof MutationObserver !== 'undefined') {
+                obs = new MutationObserver(() => { if (check()) done(true); });
+                const tbody = document.querySelector('tbody') || document.body;
+                obs.observe(tbody, { childList: true, subtree: true });
+            }
+        });
+    }
+    async function doRefresh() {
         // In-app mode: click SIM-T's own refresh button so only the ticket data
         // reloads (keeps scroll/filters, no full page restart). Falls back to a
         // full reload if the button can't be found. After clicking, the page does
-        // NOT reload, so we re-scrape after a delay and re-arm the timer ourselves.
+        // NOT reload, so we WAIT for the table to actually re-render, then scrape +
+        // compare + notify, and only then re-arm the timer for the next cycle.
         if (CONFIG.refreshMode === 'inapp') {
             const btn = findRefreshButton();
             if (btn) {
                 console.log('[T-Pot] Clicking SIM-T in-app refresh button.');
+                const prevSig = getRowSignature();
                 btn.click();
-                // Wait for the table to re-render, then scrape + compare + notify.
-                setTimeout(() => {
-                    main();
-                    // Re-arm the countdown for the next cycle (page never reloaded).
-                    if (isAutoRefreshRunning && isRefreshAllowedPage()) {
-                        resumeWithSeconds(CONFIG.autoRefreshMinutes * 60);
-                    }
-                }, CONFIG.scrapeDelay);
+                // Wait for the rows to change (up to scrapeDelay), then run main().
+                const changed = await waitForTableUpdate(prevSig, Math.max(CONFIG.scrapeDelay, 3000));
+                console.log(`[T-Pot] Table ${changed ? 'updated' : 'did not visibly change'} after in-app refresh; scraping.`);
+                await main();
+                // Re-arm the countdown for the next cycle (page never reloaded).
+                if (isAutoRefreshRunning && isRefreshAllowedPage()) {
+                    resumeWithSeconds(CONFIG.autoRefreshMinutes * 60);
+                }
                 return;
             }
             console.warn('[T-Pot] In-app refresh button not found — falling back to full reload.');
@@ -1662,6 +1772,63 @@
     // Register Tampermonkey menu command
     GM_registerMenuCommand('🫖 T-Pot Settings', openSettingsPanel);
     // ──────────────────────────────────────────────
+    // SPA NAVIGATION HANDLING
+    // SIM-T is a single-page app: clicking into a ticket and back to the list
+    // does NOT trigger a full page load, so init() never re-runs. We watch for
+    // client-side URL changes and re-initialize the badge/timer/scrape per view.
+    // ──────────────────────────────────────────────
+    let lastHref = location.href;
+    let navReinitTimer = null;
+    function handleNavigation(reason) {
+        if (location.href === lastHref) return;
+        console.log(`[T-Pot] SPA navigation detected (${reason}): ${lastHref} → ${location.href}`);
+        lastHref = location.href;
+        // Debounce rapid successive route changes.
+        clearTimeout(navReinitTimer);
+        navReinitTimer = setTimeout(() => {
+            if (!isIssuesPage()) {
+                // Navigated away from /issues — tear down T-Pot's UI/timer.
+                stopAutoRefresh();
+                const badge = document.getElementById('simt-notifier-badge');
+                if (badge) badge.remove();
+                return;
+            }
+            // Re-create the badge if the app tore it out of the DOM.
+            if (!document.getElementById('simt-notifier-badge')) {
+                createControlBadge();
+                startRepositionWatcher();
+            }
+            // Restart the auto-refresh timer for the new view (safe: it pauses first).
+            if (CONFIG.autoRefreshEnabled) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+            // Scrape + compare + notify for the newly-shown view.
+            main();
+        }, 500);
+    }
+    function installNavigationWatchers() {
+        // 1. Monkey-patch history.pushState / replaceState to emit an event.
+        const wrap = (orig, name) => function () {
+            const ret = orig.apply(this, arguments);
+            handleNavigation(name);
+            return ret;
+        };
+        try {
+            history.pushState = wrap(history.pushState, 'pushState');
+            history.replaceState = wrap(history.replaceState, 'replaceState');
+        } catch (e) {
+            console.warn('[T-Pot] Could not patch history API:', e);
+        }
+        // 2. Back/forward navigation.
+        window.addEventListener('popstate', () => handleNavigation('popstate'));
+        // 3. Hash-based routing.
+        window.addEventListener('hashchange', () => handleNavigation('hashchange'));
+        // 4. Safety net: poll the URL in case the app routes in a way the above misses.
+        setInterval(() => handleNavigation('poll'), 1500);
+    }
+    // ──────────────────────────────────────────────
     // INIT — load saved settings, then run
     // ──────────────────────────────────────────────
     (async function init() {
@@ -1683,13 +1850,22 @@
             await GM_setValue('tpot_v229_migrated', true);
             console.log('[T-Pot] Migration complete.');
         }
-        // Badge loads instantly — no waiting for ticket scraping
-        createControlBadge();
-        startRepositionWatcher();
-        if (CONFIG.autoRefreshEnabled) {
-            startAutoRefresh();
+        // React to in-app (SPA) navigation, not just the initial hard load.
+        // Watchers are ALWAYS installed (even off /issues) so we catch the user
+        // routing into /issues in a tab that started elsewhere (e.g. a ticket tab).
+        lastHref = location.href;
+        installNavigationWatchers();
+        // Only show the UI / scrape when we're actually on an /issues page.
+        if (isIssuesPage()) {
+            createControlBadge();
+            startRepositionWatcher();
+            if (CONFIG.autoRefreshEnabled) {
+                startAutoRefresh();
+            }
+            // Ticket scraping runs in the background
+            main();
+        } else {
+            console.log('[T-Pot] Not an /issues page yet — watchers active, waiting for navigation.');
         }
-        // Ticket scraping runs in the background
-        main();
     })();
 })();
