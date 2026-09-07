@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         T-Pot — SIM-T Ticket Notifier
 // @namespace    http://tampermonkey.net/
-// @version      2.32
+// @version      2.37
 // @updateURL    https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @downloadURL  https://raw.githubusercontent.com/clintzula/t-pot/main/t-pot.user.js
 // @description  Notifies you with a desktop notification and sound when new tickets appear in SIM-T on refresh
-// @author       clintzula (Luci DaProphet)
+// @author       Clinton Lucien (lucclint)
 // @match        https://t.corp.amazon.com/issues*
 // @match        https://t.corp.amazon.com/issues/*
 // @grant        GM_notification
@@ -16,11 +16,42 @@
 // ==/UserScript==
 /************************************************************
  *  🫖 T-Pot — SIM-T Ticket Notifier
- *  Created by: clintzula (Luci DaProphet)
+ *  Created by: Clinton Lucien (lucclint)
  *  GitHub:     https://github.com/clintzula/t-pot
  *
  *  CHANGELOG
  *  ─────────
+ *  v2.37 — 2026-09-07
+ *    • Added a Sev 2.5 (Daytime Sev-2) severity checkbox; checked by default
+ *    • Default severities are now 1, 2, 2.5, 3
+ *    • Severity matching refined so "2" and "2.5" no longer match each other
+ *
+ *  v2.36 — 2026-09-07
+ *    • Severity filter is now Sev 1–5 checkboxes instead of a text box
+ *    • Sev 1, 2, 3 are checked by default (was: notify for all severities)
+ *    • Uncheck all severities to notify for every severity
+ *
+ *  v2.35 — 2026-09-07
+ *    • Sound Alert setting now reminds the user to confirm the correct audio
+ *      output device is selected (and to use the Test button to verify)
+ *    • Sound now debounced to once per ~1s so it can't double-fire in a cycle
+ *    • Author updated to Clinton Lucien (lucclint)
+ *
+ *  v2.34 — 2026-09-07
+ *    • In-app refresh is now the DEFAULT refresh mode (description updated)
+ *    • Sound fix: reuse a single AudioContext and resume() it if the browser
+ *      suspended it (autoplay policy) so the selected sound reliably plays on
+ *      auto-refresh, not just after a manual click
+ *    • Prevent double-notify: main() now has a re-entrancy guard so overlapping
+ *      runs (possible in in-app mode) can't alert the same tickets twice
+ *
+ *  v2.33 — 2026-09-07
+ *    • New "Refresh Mode" setting: full page reload (default) or in-app refresh
+ *      — in-app clicks SIM-T's own Refresh button (data-testid="sim-search-refresh"),
+ *        keeping scroll/filters and re-scraping without a full page restart
+ *      — falls back to a full reload if the button can't be found
+ *    • Assignee-only mode ("Detect Assignee(s) ONLY") now defaults to OFF
+ *
  *  v2.32 — 2026-09-02
  *    • Default scrape delay reduced to 5000ms (from 10000ms)
  *    • Versioning convention: bump +0.01 per batch of ~3 changes
@@ -59,9 +90,10 @@
         soundEnabled: true,
         soundVolume: 0.6,           // 0.0 – 1.0
         notifSound: 'kettle',       // 'kettle', 'chime', 'bell', 'ping', 'alarm'
-        detectAssigneeChanges: true, // notify when a watched assignee is added to existing ticket
+        detectAssigneeChanges: false, // assignee-only mode; OFF by default (normal mode uses all filters)
         autoRefreshEnabled: true,
         autoRefreshMinutes: 2,
+        refreshMode: 'inapp',       // 'inapp' = click SIM-T's refresh button (default); 'reload' = full page reload
         desktopNotifEnabled: true,
         inPagePopupEnabled: true,     // in-page popup toast
         notifDurationSec: 8,
@@ -69,7 +101,7 @@
         titleMaxLength: 60,         // max chars for the summarized title
         // Filters — blank = notify for ALL
         filterAssignees: '',        // comma-separated aliases as shown on page, e.g. "alexyano, mdanju"
-        filterSeverities: '',       // comma-separated severity numbers as shown, e.g. "1, 2, 3"
+        filterSeverities: '1, 2, 2.5, 3', // comma-separated severity values; default 1/2/2.5/3 checked
         filterTicketTypes: '',      // comma-separated, matches row text, e.g. "Boost, Pending"
         // Auto-refresh page exclusions — refresh is skipped on URLs matching these patterns
         refreshExcludePatterns: '/create, /edit, /bulk',
@@ -92,16 +124,40 @@
     // ──────────────────────────────────────────────
     // SOUND SETUP — short beep via Web Audio API
     // ──────────────────────────────────────────────
+    let lastSoundAt = 0;
     function playNotificationSound() {
         if (!CONFIG.soundEnabled) return;
+        // Debounce: never play the alert more than once per ~1s. Guarantees a
+        // single sound per detection cycle even if triggered twice in quick
+        // succession (e.g. overlapping refreshes).
+        const now = Date.now();
+        if (now - lastSoundAt < 1000) {
+            console.log('[T-Pot] Sound debounced — already played this cycle.');
+            return;
+        }
+        lastSoundAt = now;
         try {
             playSound(CONFIG.notifSound, CONFIG.soundVolume);
         } catch (e) {
             console.warn('[T-Pot] Could not play sound:', e);
         }
     }
+    // Reuse a single AudioContext and resume it if the browser suspended it
+    // (autoplay policy). Without this, auto-refresh sounds can silently fail.
+    let sharedAudioCtx = null;
+    function getAudioContext() {
+        if (!sharedAudioCtx) {
+            sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (sharedAudioCtx.state === 'suspended') {
+            sharedAudioCtx.resume().catch(() => {});
+        }
+        return sharedAudioCtx;
+    }
     function playSound(type, volume) {
         const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
+        // Make sure the context is running before we schedule anything.
+        getAudioContext();
         switch (type) {
             case 'chime':    playChimeClassic(vol); break;
             case 'bell':     playBell(vol); break;
@@ -113,7 +169,7 @@
     }
     // 🔔 Classic two-tone chime
     function playChimeClassic(vol) {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
         [520, 660].forEach((freq, i) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
@@ -129,7 +185,7 @@
     }
     // 🛎️ Desk bell — single resonant ding
     function playBell(vol) {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
         const t = ctx.currentTime;
         [880, 1760, 2640].forEach((freq, i) => {
             const osc = ctx.createOscillator();
@@ -147,7 +203,7 @@
     }
     // 📱 Short digital ping
     function playPing(vol) {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
         const t = ctx.currentTime;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -175,7 +231,7 @@
     }
     // 🚨 Urgent alarm — triple pulse
     function playAlarm(vol) {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
         const t = ctx.currentTime;
         [0, 0.25, 0.5].forEach((offset) => {
             const osc = ctx.createOscillator();
@@ -198,7 +254,7 @@
     // 🫖 Tea kettle whistle (default)
     function playChime(volume) {
         const vol = Math.max(0, Math.min(1, volume ?? CONFIG.soundVolume));
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = getAudioContext();
         const t = ctx.currentTime;
         // Main whistle tone — high pitched like a real kettle
         const whistle = ctx.createOscillator();
@@ -461,11 +517,14 @@
         return str.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     }
     function severityMatches(text, severities) {
-        // Match a severity number only as a whole token (e.g. "sev 2", "sev-2", "2")
-        // so a bare "1" doesn't match digits inside IDs, dates, or counts.
+        // Match a severity value only as a whole token (e.g. "sev 2", "sev-2", "2",
+        // or "2.5") so a bare "1" doesn't match digits inside IDs/dates/counts, and
+        // a whole "2" doesn't match the "2" inside "2.5".
         return severities.some(s => {
             const esc = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const re = new RegExp(`(?:^|[^0-9])${esc}(?:$|[^0-9])`);
+            // Disallow an adjacent digit OR a decimal point on either side, so
+            // whole numbers and decimals don't bleed into each other.
+            const re = new RegExp(`(?:^|[^0-9.])${esc}(?:$|[^0-9.])`);
             return re.test(text);
         });
     }
@@ -699,7 +758,23 @@
     // ──────────────────────────────────────────────
     // MAIN LOGIC
     // ──────────────────────────────────────────────
+    // Guard against overlapping main() runs. In in-app refresh mode the page no
+    // longer reloads, so a manual refresh + the timer (or fast successive cycles)
+    // could otherwise run main() concurrently and alert the same tickets twice.
+    let mainRunning = false;
     async function main() {
+        if (mainRunning) {
+            console.log('[T-Pot] main() already running — skipping overlapping run.');
+            return;
+        }
+        mainRunning = true;
+        try {
+            await runMain();
+        } finally {
+            mainRunning = false;
+        }
+    }
+    async function runMain() {
         requestNotificationPermission();
         // Wait for SIM-T and other scripts (Better Search, etc.) to finish rendering.
         // Scrape immediately on the first attempt; only delay between retries.
@@ -990,7 +1065,7 @@
                     <div class="simt-setting-row">
                         <div class="simt-setting-label">
                             <div class="label-main">Sound Alert</div>
-                            <div class="label-desc">Play a chime when new tickets are detected</div>
+                            <div class="label-desc">Play a chime when new tickets are detected. 🎧 Tip: make sure your browser/OS is using the audio output device you actually listen to — use the Test button to confirm you can hear it.</div>
                         </div>
                         <div style="display:flex; align-items:center; gap:8px;">
                             <button class="simt-btn simt-btn-test" id="simt-test-sound">Test 🔊</button>
@@ -1081,10 +1156,18 @@
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
                             <div class="label-main">Severity</div>
-                            <div class="label-desc">Only notify for these severity numbers as shown on the page (e.g. 1, 2, 3)</div>
+                            <div class="label-desc">Only notify for the checked severities. Uncheck all to notify for every severity.</div>
                         </div>
-                        <input type="text" class="simt-input simt-input-wide" id="simt-s-filterSeverities"
-                               value="${CONFIG.filterSeverities}" placeholder="e.g. 1, 2, 3">
+                        <div id="simt-s-filterSeverities" style="display:flex; gap:14px; margin-top:6px; flex-wrap:wrap;">
+                            ${['1','2','2.5','3','4','5'].map(n => {
+                                const checked = parseCSVFilter(CONFIG.filterSeverities).includes(String(n)) ? 'checked' : '';
+                                return `<label style="display:flex; align-items:center; gap:5px; cursor:pointer; font-size:14px;">
+                                    <input type="checkbox" class="simt-sev-cb" value="${n}" ${checked}
+                                           style="accent-color:#ff9900; width:16px; height:16px; cursor:pointer;">
+                                    Sev ${n}
+                                </label>`;
+                            }).join('')}
+                        </div>
                     </div>
                     <div style="margin-bottom: 12px;">
                         <div class="simt-setting-label">
@@ -1114,6 +1197,19 @@
                             <div class="label-desc">Minutes between refreshes (1–60)</div>
                         </div>
                         <input type="number" class="simt-input" id="simt-s-interval" min="1" max="60" value="${CONFIG.autoRefreshMinutes}">
+                    </div>
+                    <div class="simt-setting-row">
+                        <div class="simt-setting-label">
+                            <div class="label-main">Refresh Mode</div>
+                            <div class="label-desc">In-app (default) clicks SIM-T's own Refresh button so only the ticket data reloads — keeps your scroll position and filters, and is faster. Falls back to a full page reload if the button can't be found. Full reload restarts the whole page.</div>
+                        </div>
+                        <select id="simt-s-refreshMode" style="
+                            padding: 6px 10px; background: #2a2a3e; border: 1px solid #444;
+                            border-radius: 6px; color: #e0e0e0; font-size: 13px;
+                        ">
+                            <option value="inapp" ${CONFIG.refreshMode === 'inapp' ? 'selected' : ''}>⚡ In-app refresh button (default)</option>
+                            <option value="reload" ${CONFIG.refreshMode === 'reload' ? 'selected' : ''}>🔄 Full page reload</option>
+                        </select>
                     </div>
                 </div>
                 <!-- APPEARANCE SECTION -->
@@ -1176,9 +1272,9 @@
                 <button class="simt-btn simt-btn-primary" id="simt-save-btn">Save & Apply</button>
             </div>
             <div class="simt-signature">
-                🫖 T-Pot v2.32 — Created by
-                <a href="https://github.com/clintzula" target="_blank">clintzula</a>
-                (Luci DaProphet)
+                🫖 T-Pot v2.37 — Created by
+                <a href="https://github.com/clintzula" target="_blank">Clinton Lucien</a>
+                (lucclint)
             </div>
         `;
         document.body.appendChild(panel);
@@ -1262,11 +1358,15 @@
         CONFIG.titleMaxLength = Math.max(20, Math.min(120, parseInt(document.getElementById('simt-s-titleMaxLen').value) || 60));
         CONFIG.autoRefreshEnabled = document.getElementById('simt-s-autoRefresh').checked;
         CONFIG.autoRefreshMinutes = Math.max(1, Math.min(60, parseInt(document.getElementById('simt-s-interval').value) || 2));
+        CONFIG.refreshMode = document.getElementById('simt-s-refreshMode').value === 'inapp' ? 'inapp' : 'reload';
         CONFIG.scrapeDelay = Math.max(500, Math.min(10000, parseInt(document.getElementById('simt-s-scrapeDelay').value) || 2500));
         CONFIG.ticketRowSelector = document.getElementById('simt-s-selector').value.trim() || DEFAULTS.ticketRowSelector;
         CONFIG.ticketIdAttr = document.getElementById('simt-s-idAttr').value.trim() || DEFAULTS.ticketIdAttr;
         CONFIG.filterAssignees = document.getElementById('simt-s-filterAssignees').value.trim();
-        CONFIG.filterSeverities = document.getElementById('simt-s-filterSeverities').value.trim();
+        CONFIG.filterSeverities = Array.from(document.querySelectorAll('.simt-sev-cb'))
+            .filter(cb => cb.checked)
+            .map(cb => cb.value)
+            .join(', ');
         CONFIG.filterTicketTypes = document.getElementById('simt-s-filterTypes').value.trim();
         CONFIG.refreshExcludePatterns = document.getElementById('simt-s-excludePatterns').value.trim() || DEFAULTS.refreshExcludePatterns;
         await saveSettings(CONFIG);
@@ -1461,6 +1561,38 @@
         // Use full interval for fresh start
         resumeWithSeconds(CONFIG.autoRefreshMinutes * 60);
     }
+    function findRefreshButton() {
+        // Anchor on stable attributes, NOT the build-hashed class names.
+        return document.querySelector('button[data-testid="sim-search-refresh"]')
+            || document.querySelector('button[aria-label="Refresh"]')
+            || document.querySelector('button[title="Refresh"]')
+            || document.querySelector('button[aria-label*="refresh" i], button[title*="refresh" i]');
+    }
+    function doRefresh() {
+        // In-app mode: click SIM-T's own refresh button so only the ticket data
+        // reloads (keeps scroll/filters, no full page restart). Falls back to a
+        // full reload if the button can't be found. After clicking, the page does
+        // NOT reload, so we re-scrape after a delay and re-arm the timer ourselves.
+        if (CONFIG.refreshMode === 'inapp') {
+            const btn = findRefreshButton();
+            if (btn) {
+                console.log('[T-Pot] Clicking SIM-T in-app refresh button.');
+                btn.click();
+                // Wait for the table to re-render, then scrape + compare + notify.
+                setTimeout(() => {
+                    main();
+                    // Re-arm the countdown for the next cycle (page never reloaded).
+                    if (isAutoRefreshRunning && isRefreshAllowedPage()) {
+                        resumeWithSeconds(CONFIG.autoRefreshMinutes * 60);
+                    }
+                }, CONFIG.scrapeDelay);
+                return;
+            }
+            console.warn('[T-Pot] In-app refresh button not found — falling back to full reload.');
+        }
+        console.log('[T-Pot] Auto-refreshing page (full reload)...');
+        location.reload();
+    }
     function resumeWithSeconds(seconds) {
         // Clear any existing timers first
         clearTimeout(autoRefreshTimer);
@@ -1472,8 +1604,7 @@
         countdownTimer = setInterval(updateCountdown, 1000);
         autoRefreshTimer = setTimeout(() => {
             if (isRefreshAllowedPage()) {
-                console.log('[T-Pot] Auto-refreshing page...');
-                location.reload();
+                doRefresh();
             } else {
                 console.log('[T-Pot] Refresh cancelled — navigated to excluded page.');
                 updateBadge(true, true);
